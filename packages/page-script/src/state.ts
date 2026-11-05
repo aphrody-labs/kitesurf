@@ -55,8 +55,6 @@ export interface PageScriptState {
   document: ShimDocument | null;
   window: ShimWindow | null;
 
-  lastForceRestyleSeq: number;
-
   lastRecordScrollX: number;
   lastRecordScrollY: number;
   lastRecordViewportW: number;
@@ -151,7 +149,6 @@ export const state: PageScriptState = {
   cookieKey: "",
   document: null,
   window: null,
-  lastForceRestyleSeq: -1,
   lastRecordScrollX: 0,
   lastRecordScrollY: 0,
   lastRecordViewportW: 0,
