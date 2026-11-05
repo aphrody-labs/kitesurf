@@ -21,6 +21,7 @@ import type {
 import type { QueryDomArgs, QueryDomMethod, QueryDomResult } from "@kitesurf/jsrpc-types/query-dom";
 import type { RenderPortStub } from "@kitesurf/jsrpc-types/page-renderer";
 import type { PageScriptStub, UpstreamEventHandler } from "./page-script.ts";
+import { releaseNavigateSource } from "@kitesurf/page-script/source-scan";
 import { isIsolateGoneError, notifyIsolateLimit } from "./limit-registry.ts";
 import { collectRetiredWorkers } from "./retired-worker-gc.ts";
 
@@ -221,6 +222,7 @@ export class PageScriptRpcSession implements PageScriptStub {
     method: M,
     params: PageScriptWireParams[M],
     timeoutMs?: number,
+    onSent?: () => void,
   ): Promise<PageScriptReply<M>> {
     if (this.dead) {
       throw new Error(`PageScript.${method}: session is dead (${this.deadReason ?? "unknown"})`);
@@ -257,7 +259,10 @@ export class PageScriptRpcSession implements PageScriptStub {
         }, budget);
       }
       this.inflight.add(entry);
-      session.call(method, params, meta).then(
+      const reply = session.call(method, params, meta);
+      // The call has copied `params` by now.
+      onSent?.();
+      reply.then(
         (result) => {
           if (entry.settled) return;
           entry.settled = true;
@@ -369,7 +374,9 @@ export class PageScriptRpcSession implements PageScriptStub {
     url: Parameters<PageScriptStub["navigate"]>[1],
     opts?: Parameters<PageScriptStub["navigate"]>[2],
   ): ReturnType<PageScriptStub["navigate"]> {
-    return this.call("navigate", { html, url, opts }, 30_000);
+    // Free the document's bytes here once sent, not at the next GC.
+    const release = typeof html === "string" ? undefined : () => releaseNavigateSource(html);
+    return this.call("navigate", { html, url, opts }, 30_000, release);
   }
 
   private awaitLoadInflight: Promise<LoadCompletion> | null = null;
