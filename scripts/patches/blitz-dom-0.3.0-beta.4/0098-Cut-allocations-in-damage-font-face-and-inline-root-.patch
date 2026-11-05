@@ -22,13 +22,13 @@ Output is unchanged.
 ---
  src/document.rs         | 30 ++++++++++----
  src/layout/construct.rs | 29 +++++++++-----
- src/layout/evict.rs     |  6 +--
+ src/layout/evict.rs     |  8 ++--
  src/layout/inline.rs    | 42 ++++++++++----------
  src/net.rs              | 30 ++++++++++----
  src/node/text.rs        | 28 +++++++++++--
  src/resolve.rs          | 17 ++++++--
  src/stylo_to_parley.rs  | 88 ++++++++++++++++++++++++++---------------
- 8 files changed, 181 insertions(+), 89 deletions(-)
+ 8 files changed, 183 insertions(+), 89 deletions(-)
 
 diff --git a/src/document.rs b/src/document.rs
 index fd53041..6a4040b 100644
@@ -179,15 +179,17 @@ index 57859fb..5b92f02 100644
                              if let Some((open, _)) = bidi_wrap {
                                  builder.push_text(open);
 diff --git a/src/layout/evict.rs b/src/layout/evict.rs
-index 7623331..c962229 100644
+index 28fcd04..126398f 100644
 --- a/src/layout/evict.rs
 +++ b/src/layout/evict.rs
-@@ -240,12 +240,12 @@ impl BaseDocument {
+@@ -241,12 +241,14 @@ impl BaseDocument {
          if self.inline_layout_eviction_viewports.is_none() {
              return;
          }
 -        self.inline_pass_seq = self.inline_pass_seq.wrapping_add(1);
-+        self.inline_pass_seq = self.inline_pass_seq.wrapping_add(1) & !crate::node::TextLayout::ROOT_INDEXED;
++        // The low bits of the seq word carry `ROOT_INDEXED`, so step the seq past it.
++        self.inline_pass_seq =
++            self.inline_pass_seq.wrapping_add(1) & !TextLayout::ROOT_INDEXED;
          let seq = self.inline_pass_seq;
          let Some(inline) = self.inline_layout_mut(node_id) else {
              return;
@@ -197,7 +199,7 @@ index 7623331..c962229 100644
          self.inline_pass_window.push_back((node_id, seq));
          if self.inline_pass_window.len() > IN_PASS_WINDOW {
              let (id, seq) = self.inline_pass_window.pop_front().expect("over capacity");
-@@ -268,7 +268,7 @@ impl BaseDocument {
+@@ -269,7 +271,7 @@ impl BaseDocument {
          // out from its break summary and never rebuilt.
          if self
              .inline_layout_mut(id)
