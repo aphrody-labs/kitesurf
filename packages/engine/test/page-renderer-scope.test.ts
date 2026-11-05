@@ -2,11 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 // https://opensource.org/licenses/Apache-2.0
 
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("../src/eval/page-script.ts", () => ({
-  loadWasmBytesFromVfs: () => new Uint8Array(0),
-}));
+import { describe, expect, it } from "vitest";
 
 import type { RenderFrameOpts, RenderPortStub } from "@kitesurf/jsrpc-types/page-renderer";
 import { PageRendererManager, type RendererEnv } from "../src/eval/page-renderer.ts";
