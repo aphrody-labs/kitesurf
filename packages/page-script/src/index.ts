@@ -3580,7 +3580,6 @@ export class PageScript extends WorkerEntrypoint implements PageScriptSession {
     try {
       void resolveExternalSvgSprites();
     } catch {}
-    state.getOpLog = built.getOpLog || (() => []);
     state.setReadyState = built.setReadyState || (() => {});
     state.drainCookieWrites = built.drainCookieWrites || (() => []);
     state.setCookieString = built.setCookieString || (() => {});
@@ -4278,7 +4277,6 @@ export class PageScript extends WorkerEntrypoint implements PageScriptSession {
     state.documentUrl = "";
     state.document = null;
     state.window = null;
-    state.getOpLog = () => [];
     state.setReadyState = () => {};
     const cookieWrites = state.drainCookieWrites();
     state.drainCookieWrites = () => [];
