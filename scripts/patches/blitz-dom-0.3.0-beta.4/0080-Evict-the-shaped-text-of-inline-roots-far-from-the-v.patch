@@ -1512,10 +1512,10 @@ index e6ea225..05146a7 100644
 +    EvictedBreak, EvictedLayout, EvictedSummary, InlineRebuild, SummaryCell, count_inline_summary,
 +};
 diff --git a/src/node/node.rs b/src/node/node.rs
-index 00644f0..d2e8e0b 100644
+index 4620b69..8bb5bc6 100644
 --- a/src/node/node.rs
 +++ b/src/node/node.rs
-@@ -2396,7 +2396,7 @@ impl Node {
+@@ -2404,7 +2404,7 @@ impl Node {
          if self.flags.is_inline_root() {
              let element_data = &self.element_data().unwrap();
              if let Some(ild) = element_data.inline_layout_data() {
@@ -1524,7 +1524,7 @@ index 00644f0..d2e8e0b 100644
                  let scale = layout.scale();
                  let content_box_offset = taffy::Point {
                      x: self.final_layout().padding.left + self.final_layout().border.left,
-@@ -2484,7 +2484,7 @@ impl Node {
+@@ -2492,7 +2492,7 @@ impl Node {
 
          let element_data = self.element_data()?;
          let inline_layout = element_data.inline_layout_data()?;
@@ -1533,7 +1533,7 @@ index 00644f0..d2e8e0b 100644
          let scale = layout.scale();
          let y = y - inline_layout.block_offset;
 
-@@ -2600,7 +2600,7 @@ impl Node {
+@@ -2608,7 +2608,7 @@ impl Node {
 
          let inline_root = self.inline_root_ancestor()?;
          let inline_layout = inline_root.element_data()?.inline_layout_data()?;
