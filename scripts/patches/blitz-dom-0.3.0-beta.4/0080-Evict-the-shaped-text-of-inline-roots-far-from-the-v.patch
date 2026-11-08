@@ -2111,7 +2111,7 @@ index 274849e..83ce847 100644
 
  impl std::fmt::Debug for TextLayout {
 diff --git a/src/resolve.rs b/src/resolve.rs
-index 1eaa68d..6d7fec2 100644
+index 9998f29..c6cb821 100644
 --- a/src/resolve.rs
 +++ b/src/resolve.rs
 @@ -7,6 +7,8 @@ use std::collections::HashSet;
@@ -2137,7 +2137,7 @@ index 1eaa68d..6d7fec2 100644
          let mut subdoc_is_animating = false;
          for &node_id in &self.sub_document_nodes {
              let node = &mut self.nodes[node_id];
-@@ -740,6 +749,28 @@ impl BaseDocument {
+@@ -746,6 +755,28 @@ impl BaseDocument {
          deferred_construction_nodes.sort_unstable_by_key(|task| task.node_id);
          deferred_construction_nodes.dedup_by_key(|task| task.node_id);
 

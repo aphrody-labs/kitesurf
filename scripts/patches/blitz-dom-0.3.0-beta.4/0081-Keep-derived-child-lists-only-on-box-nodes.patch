@@ -443,7 +443,7 @@ index 8bb5bc6..a78a630 100644
              .field("node", &self.data)
              .field("stylo_element_data", &self.try_stylo_element_data())
 diff --git a/src/resolve.rs b/src/resolve.rs
-index 6d7fec2..1feec18 100644
+index c6cb821..ece1028 100644
 --- a/src/resolve.rs
 +++ b/src/resolve.rs
 @@ -394,7 +394,7 @@ impl BaseDocument {
@@ -519,7 +519,7 @@ index 6d7fec2..1feec18 100644
              if !is_root {
                  // The root keeps its own box slot: its container may still list it.
                  node.layout_parent.set(None);
-@@ -726,10 +725,10 @@ impl BaseDocument {
+@@ -732,10 +731,10 @@ impl BaseDocument {
              if !node.flags.contains(NodeFlags::IS_IN_DOCUMENT) {
                  continue;
              }
