@@ -13,10 +13,10 @@ reshapes everything.
 The damage is applied at the next resolve rather than on each delivery, so a page that
 receives N faces walks its nodes once instead of N times.
 ---
- src/document.rs      | 29 +++++++++++++++--
- src/layout/damage.rs | 77 ++++++++++++++++++++++++++++++++++++++++++++
+ src/document.rs      | 29 ++++++++++++++--
+ src/layout/damage.rs | 83 ++++++++++++++++++++++++++++++++++++++++++++
  src/resolve.rs       |  8 +++++
- 3 files changed, 112 insertions(+), 2 deletions(-)
+ 3 files changed, 118 insertions(+), 2 deletions(-)
 
 diff --git a/src/document.rs b/src/document.rs
 index b5fbd06..8d4090d 100644
@@ -80,10 +80,10 @@ index b5fbd06..8d4090d 100644
              Resource::None => {
                  // Do nothing
 diff --git a/src/layout/damage.rs b/src/layout/damage.rs
-index dda2ad1..21d12ce 100644
+index dda2ad1..4447c20 100644
 --- a/src/layout/damage.rs
 +++ b/src/layout/damage.rs
-@@ -615,6 +615,83 @@ pub(crate) fn sort_layout_children_by_order(
+@@ -615,6 +615,89 @@ pub(crate) fn sort_layout_children_by_order(
  }
 
  impl BaseDocument {
@@ -103,7 +103,13 @@ index dda2ad1..21d12ce 100644
 +            styles.get_font().font_family.families.list.iter().any(|family| match family {
 +                style::values::computed::font::SingleFontFamily::FamilyName(name) => {
 +                    let name = name.name.as_ref();
-+                    families.iter().any(|f| f.eq_ignore_ascii_case(name))
++                    families.iter().any(|f| {
++                        if name.is_ascii() {
++                            f.eq_ignore_ascii_case(name)
++                        } else {
++                            f.as_str() == name.to_lowercase().as_str()
++                        }
++                    })
 +                }
 +                style::values::computed::font::SingleFontFamily::Generic(_) => false,
 +            })
