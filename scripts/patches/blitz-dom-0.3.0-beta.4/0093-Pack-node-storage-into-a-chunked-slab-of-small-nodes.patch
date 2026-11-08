@@ -1489,7 +1489,7 @@ index 9c3f1b6..62c864a 100644
          }
 
 diff --git a/src/layout/damage.rs b/src/layout/damage.rs
-index 4447c20..49df7ad 100644
+index 18ee872..0a4b7a2 100644
 --- a/src/layout/damage.rs
 +++ b/src/layout/damage.rs
 @@ -62,12 +62,12 @@ impl BaseDocument {
