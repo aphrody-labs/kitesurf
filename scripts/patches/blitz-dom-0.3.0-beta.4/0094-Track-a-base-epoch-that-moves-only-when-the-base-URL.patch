@@ -7,8 +7,8 @@ Subject: [PATCH] Track a base epoch that moves only when the base URL can
 Signed-off-by: bpereira <bpereira@cloudflare.com>
 ---
  src/document.rs |  4 ++++
- src/mutator.rs  | 55 +++++++++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 59 insertions(+)
+ src/mutator.rs  | 58 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 62 insertions(+)
 
 diff --git a/src/document.rs b/src/document.rs
 index 61145f8..a8f056a 100644
@@ -33,7 +33,7 @@ index 61145f8..a8f056a 100644
              pending_style_image_nodes: Vec::new(),
              pending_critical_resources: HashSet::new(),
 diff --git a/src/mutator.rs b/src/mutator.rs
-index dca7655..8bbd8c8 100644
+index dca7655..8191484 100644
 --- a/src/mutator.rs
 +++ b/src/mutator.rs
 @@ -396,6 +396,7 @@ impl DocumentMutator<'_> {
@@ -64,7 +64,17 @@ index dca7655..8bbd8c8 100644
          if node_is_in_document {
              self.doc.snapshot_node_for_attr(node_id, Some(&name.local));
 
-@@ -1466,6 +1478,7 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -970,6 +982,9 @@ impl DocumentMutator<'_> {
+             let child = &mut self.doc.nodes[child_id];
+             let child_was_in_doc = child.flags.is_in_document();
+             self.mutations_occurred |= child_was_in_doc;
++            if child_was_in_doc && child.data.is_element_with_tag_name(&local_name!("base")) {
++                self.doc.base_epoch = self.doc.base_epoch.wrapping_add(1);
++            }
+             if new_parent_is_in_document
+                 && child_was_in_doc
+                 && child.containing_shadow_root_id().is_some() != new_in_shadow
+@@ -1466,6 +1481,7 @@ impl<'doc> DocumentMutator<'doc> {
                  "style" => {
                      self.style_nodes.insert(node_id);
                  }
@@ -72,7 +82,7 @@ index dca7655..8bbd8c8 100644
                  _ if has_custom_widget => {}
                  "link" => self.eager_op_queue.push(SpecialOp::LoadStylesheet(node_id)),
                  "img" => self.eager_op_queue.push(SpecialOp::LoadImage(node_id)),
-@@ -1510,6 +1523,9 @@ impl<'doc> DocumentMutator<'doc> {
+@@ -1510,6 +1526,9 @@ impl<'doc> DocumentMutator<'doc> {
              // ancestor chain, IME disable on blur of a focused input).
              doc.clear_interaction_state_for_removed_node(node_id);
 
@@ -82,7 +92,7 @@ index dca7655..8bbd8c8 100644
              let is_style = doc.nodes[node_id]
                  .data
                  .is_element_with_tag_name(&local_name!("style"));
-@@ -2977,6 +2993,45 @@ mod test {
+@@ -2977,6 +2996,45 @@ mod test {
          );
      }
 
