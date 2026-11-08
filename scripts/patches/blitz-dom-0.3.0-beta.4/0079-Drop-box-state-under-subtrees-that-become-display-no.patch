@@ -16,13 +16,13 @@ runs queued sequential tasks.
 
 Signed-off-by: bpereira <bpereira@cloudflare.com>
 ---
- src/document.rs         | 112 +++++++++++++++++++++++++++++
+ src/document.rs         | 112 ++++++++++++++++++++++++++++++
  src/layout/construct.rs |  48 ++++++++-----
  src/layout/damage.rs    |  17 +++++
  src/node/element.rs     |   4 ++
- src/resolve.rs          | 154 ++++++++++++++++++++++++++++++++++++++++
+ src/resolve.rs          | 147 ++++++++++++++++++++++++++++++++++++++++
  src/stylo.rs            |   3 +
- 6 files changed, 322 insertions(+), 16 deletions(-)
+ 6 files changed, 315 insertions(+), 16 deletions(-)
 
 diff --git a/src/document.rs b/src/document.rs
 index 415dbe9..c483593 100644
@@ -294,7 +294,7 @@ index 7b8054c..245c26b 100644
      #[inline]
      pub fn list_item_data(&self) -> Option<&ListItemLayout> {
 diff --git a/src/resolve.rs b/src/resolve.rs
-index 3ee3356..985efd2 100644
+index 3ee3356..1eaa68d 100644
 --- a/src/resolve.rs
 +++ b/src/resolve.rs
 @@ -2,6 +2,7 @@
@@ -345,7 +345,7 @@ index 3ee3356..985efd2 100644
  fn snap_table_tracks(
      tracks: &mut taffy::DetailedGridTracksInfo<style::Atom>,
      raw_origin: f32,
-@@ -640,6 +674,45 @@ impl BaseDocument {
+@@ -640,6 +674,38 @@ impl BaseDocument {
          }
      }
 
@@ -367,18 +367,11 @@ index 3ee3356..985efd2 100644
 +                // The root keeps its own box slot: its container may still list it.
 +                node.layout_parent.set(None);
 +            }
-+            // A user or script set the scroll offset, and layout cannot rebuild
-+            // it, so a scrolled box keeps its layout data while hidden. Text and
-+            // comment nodes have no layout data, so ask only element kinds.
-+            let scrolled = node.element_data().is_some_and(|_| {
-+                let offset = node.scroll_offset();
-+                offset.x != 0.0 || offset.y != 0.0
-+            });
 +            if let Some(element) = node.element_data_mut() {
 +                element.set_inline_layout_data(None);
 +                element.set_list_item_data(None);
 +                element.clear_detailed_layout_info();
-+                if !is_root && !scrolled {
++                if !is_root {
 +                    element.layout_data = None;
 +                }
 +            }
@@ -391,7 +384,7 @@ index 3ee3356..985efd2 100644
      /// Every layout child must point back at its container via
      /// `layout_parent`, which `propagate_damage_flags` relies on to reach
      /// anonymous boxes.
-@@ -915,3 +988,84 @@ impl BaseDocument {
+@@ -915,3 +981,84 @@ impl BaseDocument {
          }
      }
  }

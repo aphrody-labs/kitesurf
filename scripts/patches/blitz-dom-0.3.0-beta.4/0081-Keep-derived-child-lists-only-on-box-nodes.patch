@@ -295,7 +295,7 @@ index 603d48c..1bdb177 100644
              bits: ElementBits::new(name_ns),
              id: id_attr_atom,
 diff --git a/src/node/node.rs b/src/node/node.rs
-index d2e8e0b..2a3cc38 100644
+index 8bb5bc6..a78a630 100644
 --- a/src/node/node.rs
 +++ b/src/node/node.rs
 @@ -174,6 +174,34 @@ impl NodeIdCell {
@@ -406,7 +406,7 @@ index d2e8e0b..2a3cc38 100644
      fn rare(&self) -> &NodeRare {
          self.rare.get_or_init(|| Box::new(NodeRare::default()))
      }
-@@ -879,8 +949,6 @@ impl Node {
+@@ -887,8 +957,6 @@ impl Node {
              parent: OptNodeId::default(),
              children: ThinVec::new(),
              layout_parent: NodeIdCell::new(None),
@@ -415,7 +415,7 @@ index d2e8e0b..2a3cc38 100644
              rare: OnceCell::new(),
 
              flags: NodeFlags::empty(),
-@@ -2337,7 +2405,8 @@ impl Node {
+@@ -2345,7 +2413,8 @@ impl Node {
          }
 
          // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
@@ -425,7 +425,7 @@ index d2e8e0b..2a3cc38 100644
              let child = self.with(*child_id);
              let child_position = child.taffy_position();
              let mut child_x = x;
-@@ -2374,6 +2443,7 @@ impl Node {
+@@ -2382,6 +2451,7 @@ impl Node {
                  return Some(hit);
              }
          }
@@ -433,7 +433,7 @@ index d2e8e0b..2a3cc38 100644
 
          // Negative z_index hoisted children
          if matches_hoisted_content {
-@@ -2831,7 +2901,7 @@ impl std::fmt::Debug for Node {
+@@ -2839,7 +2909,7 @@ impl std::fmt::Debug for Node {
              .field("id", &self.id)
              .field("is_inline_root", &self.flags.is_inline_root())
              .field("children", &self.children)
@@ -443,7 +443,7 @@ index d2e8e0b..2a3cc38 100644
              .field("node", &self.data)
              .field("stylo_element_data", &self.try_stylo_element_data())
 diff --git a/src/resolve.rs b/src/resolve.rs
-index d3c2102..a7c33ff 100644
+index 6d7fec2..1feec18 100644
 --- a/src/resolve.rs
 +++ b/src/resolve.rs
 @@ -394,7 +394,7 @@ impl BaseDocument {
@@ -519,7 +519,7 @@ index d3c2102..a7c33ff 100644
              if !is_root {
                  // The root keeps its own box slot: its container may still list it.
                  node.layout_parent.set(None);
-@@ -733,10 +732,10 @@ impl BaseDocument {
+@@ -726,10 +725,10 @@ impl BaseDocument {
              if !node.flags.contains(NodeFlags::IS_IN_DOCUMENT) {
                  continue;
              }
