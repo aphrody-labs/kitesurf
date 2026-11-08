@@ -65,14 +65,14 @@ within run-to-run noise.
  src/node/stylo_data.rs     | 403 ++++++++++++++--
  src/pool.rs                | 189 ++++++++
  src/query_selector.rs      |  12 +-
- src/resolve.rs             |  26 +-
+ src/resolve.rs             |  40 +-
  src/resolved_style.rs      |   6 +-
  src/scrolling.rs           |  14 +-
  src/stylo.rs               |  49 +-
  src/traversal.rs           |  83 ++--
  src/tree.rs                | 405 +++++++++++++---
  src/util.rs                |  10 +-
- 37 files changed, 3102 insertions(+), 892 deletions(-)
+ 37 files changed, 3116 insertions(+), 892 deletions(-)
  create mode 100644 src/node/child_list.rs
  create mode 100644 src/pool.rs
 
@@ -6579,7 +6579,7 @@ index 8962853..559ee85 100644
      }
  }
 diff --git a/src/resolve.rs b/src/resolve.rs
-index c4a0628..b56430b 100644
+index c4a0628..7bb5ebe 100644
 --- a/src/resolve.rs
 +++ b/src/resolve.rs
 @@ -58,7 +58,7 @@ impl UndisplayedLayoutTraversal {
@@ -6627,7 +6627,28 @@ index c4a0628..b56430b 100644
                      if let Some(mut data) = doc.nodes[child_id]
                          .try_stylo_element_data_mut()
                          .and_then(|s| s.get_mut())
-@@ -698,7 +698,7 @@ impl BaseDocument {
+@@ -683,6 +683,20 @@ impl BaseDocument {
+                     }
+                 }
+
++                // Child links are bare slot indexes, so a child that dropped out of this
++                // list must not keep one to us: once our slot is reused, that index names
++                // the new occupant. Clear the ones this pass did not re-collect.
++                let previous = doc.nodes[node_id].take_layout_children();
++                for child_id in previous.unwrap_or_default() {
++                    if layout_children.contains(&child_id) {
++                        continue;
++                    }
++                    if let Some(child) = doc.nodes.get_mut(child_id) {
++                        if child.layout_parent_id() == Some(node_id) {
++                            child.set_layout_parent_id(None);
++                        }
++                    }
++                }
+                 doc.nodes[node_id].set_layout_children(Some(layout_children.clone()));
+
+                 damage.remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+@@ -698,7 +712,7 @@ impl BaseDocument {
                              continue;
                          }
                          resolve_layout_children_recursive(doc, child_id);
@@ -6636,7 +6657,7 @@ index c4a0628..b56430b 100644
                      }
 
                      doc.nodes[node_id].set_layout_children(Some(layout_children));
-@@ -728,7 +728,7 @@ impl BaseDocument {
+@@ -728,7 +742,7 @@ impl BaseDocument {
              node.take_paint_children();
              if !is_root {
                  // The root keeps its own box slot: its container may still list it.
@@ -6645,7 +6666,7 @@ index c4a0628..b56430b 100644
              }
              // A user or script set the scroll offset, and layout cannot rebuild
              // it, so a scrolled box keeps its layout data while hidden. Text and
-@@ -742,7 +742,7 @@ impl BaseDocument {
+@@ -742,7 +756,7 @@ impl BaseDocument {
                  element.set_list_item_data(None);
                  element.clear_detailed_layout_info();
                  if !is_root && !scrolled {
@@ -6654,7 +6675,7 @@ index c4a0628..b56430b 100644
                  }
              }
              for anon_id in anonymous_blocks {
-@@ -770,7 +770,7 @@ impl BaseDocument {
+@@ -770,7 +784,7 @@ impl BaseDocument {
                      panic!("layout child {child_id:?} of {parent_id:?} is not in the slab");
                  };
                  debug_assert_eq!(
@@ -6663,7 +6684,7 @@ index c4a0628..b56430b 100644
                      Some(parent_id),
                      "layout_parent of {child_id:?} does not point at its layout container {parent_id:?}"
                  );
-@@ -897,7 +897,7 @@ impl BaseDocument {
+@@ -897,7 +911,7 @@ impl BaseDocument {
              height: AvailableSpace::Definite(size.height.to_f32_px()),
          };
 
@@ -6672,7 +6693,7 @@ index c4a0628..b56430b 100644
 
          // println!("\n\nRESOLVE LAYOUT\n===========\n");
 
-@@ -932,7 +932,7 @@ impl BaseDocument {
+@@ -932,7 +946,7 @@ impl BaseDocument {
                  let Some(element) = node.element_data() else {
                      continue;
                  };
@@ -6681,7 +6702,7 @@ index c4a0628..b56430b 100644
                      continue;
                  };
                  let Some(mut grid_info) = table.computed_grid_info.borrow().clone() else {
-@@ -1065,7 +1065,7 @@ mod undisplayed_layout_tests {
+@@ -1065,7 +1079,7 @@ mod undisplayed_layout_tests {
              viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
              ..Default::default()
          });
@@ -6690,7 +6711,7 @@ index c4a0628..b56430b 100644
          let block_style = || Attribute::new(qual_name!("style"), "display:block".to_string());
          let mut mutator = doc.mutate();
          let html = mutator.create_element(qual_name!("html"), vec![block_style()]);
-@@ -1118,6 +1118,7 @@ mod undisplayed_layout_tests {
+@@ -1118,6 +1132,7 @@ mod undisplayed_layout_tests {
              .element_data()
              .unwrap()
              .layout_data
@@ -6698,7 +6719,7 @@ index c4a0628..b56430b 100644
              .is_some());
          doc.mutate()
              .set_attribute(outer, qual_name!("style"), "display:none");
-@@ -1126,6 +1127,7 @@ mod undisplayed_layout_tests {
+@@ -1126,6 +1141,7 @@ mod undisplayed_layout_tests {
              .element_data()
              .unwrap()
              .layout_data
