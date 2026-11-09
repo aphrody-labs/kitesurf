@@ -57,9 +57,9 @@ within run-to-run noise.
  src/mutator.rs             | 206 ++++----
  src/node/attributes.rs     |  28 +-
  src/node/child_list.rs     | 201 ++++++++
- src/node/element.rs        | 881 +++++++++++++++++++++++++++++------
+ src/node/element.rs        | 881 ++++++++++++++++++++++++++++------
  src/node/mod.rs            |   3 +-
- src/node/node.rs           | 932 ++++++++++++++++++++++++++++++-------
+ src/node/node.rs           | 940 ++++++++++++++++++++++++++++++-------
  src/node/scrollbar.rs      |   2 +-
  src/node/serialize.rs      |  17 +-
  src/node/stylo_data.rs     | 403 ++++++++++++++--
@@ -72,7 +72,7 @@ within run-to-run noise.
  src/traversal.rs           |  83 ++--
  src/tree.rs                | 405 +++++++++++++---
  src/util.rs                |  10 +-
- 37 files changed, 3132 insertions(+), 892 deletions(-)
+ 37 files changed, 3140 insertions(+), 892 deletions(-)
  create mode 100644 src/node/child_list.rs
  create mode 100644 src/pool.rs
 
@@ -4327,7 +4327,7 @@ index 5e81524..07ccf19 100644
  };
  pub use node::*;
 diff --git a/src/node/node.rs b/src/node/node.rs
-index 240693f..c78cd22 100644
+index 240693f..dacae61 100644
 --- a/src/node/node.rs
 +++ b/src/node/node.rs
 @@ -1,4 +1,5 @@
@@ -5022,20 +5022,20 @@ index 240693f..c78cd22 100644
 +    pub fn stylo_element_data(&self) -> StyloData<'_> {
 +        self.try_stylo_element_data()
 +            .expect("`stylo_element_data` is not available on this node kind")
-+    }
-+
-+    #[inline]
-+    pub fn stylo_element_data_mut(&mut self) -> StyloDataMut<'_> {
-+        self.try_stylo_element_data_mut()
-+            .expect("`stylo_element_data` is not available on this node kind")
      }
 
 -    /// The `damaged_descendants` flag, if this node kind carries it (element or
 -    /// document nodes). Returns `None` for text/comment nodes.
-+    /// The state flags, if this node kind carries them (element or document
-+    /// nodes). Returns `None` for text/comment nodes.
      #[inline]
 -    fn damaged_descendants_flag(&self) -> Option<&AtomicBool> {
++    pub fn stylo_element_data_mut(&mut self) -> StyloDataMut<'_> {
++        self.try_stylo_element_data_mut()
++            .expect("`stylo_element_data` is not available on this node kind")
++    }
++
++    /// The state flags, if this node kind carries them (element or document
++    /// nodes). Returns `None` for text/comment nodes.
++    #[inline]
 +    fn state_flags(&self) -> Option<&NodeStateFlags> {
          match &self.data {
 -            NodeData::Element(data) | NodeData::AnonymousBlock(data) => {
@@ -5067,7 +5067,7 @@ index 240693f..c78cd22 100644
      /// The document's shared style lock. Only available on element and
      /// document nodes.
      #[inline]
-@@ -954,17 +1346,225 @@ impl Node {
+@@ -954,17 +1346,233 @@ impl Node {
          Self {
              tree,
 
@@ -5110,7 +5110,15 @@ index 240693f..c78cd22 100644
 +
 +    #[inline]
 +    fn resolve(&self, index: u32) -> Option<NodeId> {
-+        (index != 0).then(|| link_id(self.tree, index))
++        if index == 0 {
++            return None;
++        }
++        // A link names a slot, not a generation. When the node it named has since been freed the
++        // link resolves to nothing: callers already read a missing parent as "no parent", and
++        // resolving it would name whatever occupies the slot next.
++        // SAFETY: `tree` is the node's own tree pointer (see `version_at`).
++        let version = unsafe { crate::tree::version_at(self.tree, index) };
++        (version != 0).then(|| crate::tree::id_from_parts(index, version))
 +    }
 +
 +    #[inline(always)]
@@ -5298,7 +5306,7 @@ index 240693f..c78cd22 100644
      pub fn set_transform(&mut self, scale: f32) -> Option<Affine> {
          let transform = self.primary_styles().and_then(|s| {
              let size = self.final_layout().size;
-@@ -1053,7 +1653,6 @@ impl Node {
+@@ -1053,7 +1661,6 @@ impl Node {
                  if matches!(display.inside(), DisplayInside::Flow | DisplayInside::Contents) {
                      self.flat_children()
                          .iter()
@@ -5306,7 +5314,7 @@ index 240693f..c78cd22 100644
                          .any(|child_id| self.tree()[child_id].is_or_contains_block())
                  } else {
                      false
-@@ -1082,8 +1681,7 @@ impl Node {
+@@ -1082,8 +1689,7 @@ impl Node {
              return false;
          }
          let white_space_collapse = self
@@ -5316,7 +5324,7 @@ index 240693f..c78cd22 100644
              .and_then(|parent_id| self.with(parent_id).primary_styles())
              .map(|style| style.clone_white_space_collapse());
          match white_space_collapse {
-@@ -1113,21 +1711,21 @@ impl Node {
+@@ -1113,21 +1719,21 @@ impl Node {
 
      /// Returns whether this node has any descendants that need restyling.
      pub fn has_dirty_descendants(&self) -> bool {
@@ -5344,7 +5352,7 @@ index 240693f..c78cd22 100644
          }
      }
 
-@@ -1140,8 +1738,8 @@ impl Node {
+@@ -1140,8 +1746,8 @@ impl Node {
              let parent = &self.tree()[parent_id];
              // If this ancestor already has dirty_descendants set, we can stop
              // because all further ancestors must also have it set
@@ -5355,7 +5363,7 @@ index 240693f..c78cd22 100644
                      break;
                  }
              }
-@@ -1158,19 +1756,19 @@ impl Node {
+@@ -1158,19 +1764,19 @@ impl Node {
          if let Some(host) = self.shadow_root_data().map(|data| data.host) {
              return Some(host);
          }
@@ -5380,7 +5388,7 @@ index 240693f..c78cd22 100644
          }
      }
 
-@@ -1181,8 +1779,8 @@ impl Node {
+@@ -1181,8 +1787,8 @@ impl Node {
      /// processing such as pseudo-element style syncing), then it and all of
      /// its ancestors have `damaged_descendants` set.
      pub fn mark_damaged(&self) {
@@ -5391,7 +5399,7 @@ index 240693f..c78cd22 100644
                  return;
              }
          }
-@@ -1191,8 +1789,8 @@ impl Node {
+@@ -1191,8 +1797,8 @@ impl Node {
              let parent = &self.tree()[parent_id];
              // If this ancestor already has damaged_descendants set, we can stop
              // because all further ancestors must also have it set
@@ -5402,7 +5410,7 @@ index 240693f..c78cd22 100644
                      break;
                  }
              }
-@@ -1452,10 +2050,10 @@ pub enum NodeData {
+@@ -1452,10 +2058,10 @@ pub enum NodeData {
      Document(Box<DocumentData>),
 
      /// An element with attributes.
@@ -5415,7 +5423,7 @@ index 240693f..c78cd22 100644
 
      /// A text node.
      Text(TextNodeData),
-@@ -1480,6 +2078,9 @@ pub enum NodeData {
+@@ -1480,6 +2086,9 @@ pub enum NodeData {
  // One node slot per DOM node: keep the boxed comment variant from widening it.
  #[cfg(target_pointer_width = "32")]
  const _: () = assert!(std::mem::size_of::<NodeData>() == 12);
@@ -5425,7 +5433,7 @@ index 240693f..c78cd22 100644
 
  impl NodeData {
      pub fn downcast_element(&self) -> Option<&ElementData> {
-@@ -1539,13 +2140,16 @@ impl NodeData {
+@@ -1539,13 +2148,16 @@ impl NodeData {
 
  #[derive(Debug, Clone)]
  pub struct TextNodeData {
@@ -5446,7 +5454,7 @@ index 240693f..c78cd22 100644
      }
  }
 
-@@ -1587,35 +2191,39 @@ impl Node {
+@@ -1587,35 +2199,39 @@ impl Node {
          println!(
              "{} {} {:?} {} {:?}",
              "  ".repeat(level),
@@ -5497,7 +5505,7 @@ index 240693f..c78cd22 100644
          CHILD_INDEX_HINT.with(|hints| hints[slot].set(found));
          Some(found)
      }
-@@ -1623,10 +2231,10 @@ impl Node {
+@@ -1623,10 +2239,10 @@ impl Node {
      // Get the nth node in the parents child list
      pub fn forward(&self, n: usize) -> Option<&Node> {
          let child_idx = self.child_index().unwrap_or(0);
@@ -5511,7 +5519,7 @@ index 240693f..c78cd22 100644
      }
 
      pub fn backward(&self, n: usize) -> Option<&Node> {
-@@ -1635,10 +2243,10 @@ impl Node {
+@@ -1635,10 +2251,10 @@ impl Node {
              return None;
          }
 
@@ -5525,7 +5533,7 @@ index 240693f..c78cd22 100644
      }
 
      pub fn is_element(&self) -> bool {
-@@ -1666,29 +2274,29 @@ impl Node {
+@@ -1666,29 +2282,29 @@ impl Node {
      /// Nearest enclosing shadow root's node id, walking light parents.
      /// None for nodes in the document tree proper.
      pub fn containing_shadow_root_id(&self) -> Option<NodeId> {
@@ -5561,7 +5569,7 @@ index 240693f..c78cd22 100644
      }
 
      /// True for HTML <slot> elements (flat-tree projection points).
-@@ -1924,7 +2532,7 @@ impl Node {
+@@ -1924,7 +2540,7 @@ impl Node {
      // assigned slot (dir-shadow-03/04/31: dir=rtl on the slot gives
      // ltr :dir but rtl computed; CSS inherits flat, HTML doesn't).
      pub(crate) fn html_directionality_is_rtl(&self) -> bool {
@@ -5570,7 +5578,7 @@ index 240693f..c78cd22 100644
          while let Some(id) = cur {
              let node = self.with(id);
              if let Some(el) = node.data.downcast_element() {
-@@ -1951,7 +2559,7 @@ impl Node {
+@@ -1951,7 +2567,7 @@ impl Node {
      }
 
      fn directionality_flat_parent(&self) -> Option<NodeId> {
@@ -5579,7 +5587,7 @@ index 240693f..c78cd22 100644
          if let NodeData::ShadowRoot(ref data) = self.with(parent_id).data {
              return Some(data.host);
          }
-@@ -2020,13 +2628,13 @@ impl Node {
+@@ -2020,13 +2636,13 @@ impl Node {
                              return None;
                          }
                      }
@@ -5596,7 +5604,7 @@ index 240693f..c78cd22 100644
                  }
                  _ => None,
              }
-@@ -2040,8 +2648,8 @@ impl Node {
+@@ -2040,8 +2656,8 @@ impl Node {
                  out.push_str(&data.content);
              }
              NodeData::Element(..) | NodeData::AnonymousBlock(..) => {
@@ -5607,7 +5615,7 @@ index 240693f..c78cd22 100644
                  }
              }
              _ => {}
-@@ -2123,8 +2731,8 @@ impl Node {
+@@ -2123,8 +2739,8 @@ impl Node {
              let next = match node.taffy_position() {
                  taffy::Position::Absolute | taffy::Position::Fixed => node
                      .oof_containing_block()
@@ -5618,7 +5626,7 @@ index 240693f..c78cd22 100644
              };
              match next {
                  Some(next) if next != cur => cur = next,
-@@ -2196,7 +2804,7 @@ impl Node {
+@@ -2196,7 +2812,7 @@ impl Node {
          let mut rect: Option<(f32, f32, f32, f32)> = None;
          for &child_id in children.iter() {
              let Some(child) = tree.get(child_id) else { continue };
@@ -5627,7 +5635,7 @@ index 240693f..c78cd22 100644
              rect = Some(match rect {
                  None => r,
                  Some(a) => (a.0.min(r.0), a.1.min(r.1), a.2.max(r.2), a.3.max(r.3)),
-@@ -2351,7 +2959,7 @@ impl Node {
+@@ -2351,7 +2967,7 @@ impl Node {
              Some(sc) => {
                  // Both the point (after the scroll adjustment above) and the
                  // bbox are in this node's unscrolled content coordinates.
@@ -5636,7 +5644,7 @@ index 240693f..c78cd22 100644
                  x >= bbox.left && x <= bbox.right && y >= bbox.top && y <= bbox.bottom
              }
              None => false,
-@@ -2408,7 +3016,7 @@ impl Node {
+@@ -2408,7 +3024,7 @@ impl Node {
          if matches_hoisted_content {
              if let Some(hoisted) = self.stacking_context() {
                  for hoisted_child in hoisted.pos_z_hoisted_children().rev() {
@@ -5645,7 +5653,7 @@ index 240693f..c78cd22 100644
                      let x = x - pos.x;
                      let y = y - pos.y;
                      if let Some(hit) = self
-@@ -2451,8 +3059,8 @@ impl Node {
+@@ -2451,8 +3067,8 @@ impl Node {
              // A re-homed abspos keeps its containing block's layout
              // origin, so undo the difference before descending. It paints
              // unscrolled, so leave this node's scrolled content space too.
@@ -5656,7 +5664,7 @@ index 240693f..c78cd22 100644
                  child_x -= t.x + self.scroll_offset().x as f32;
                  child_y -= t.y + self.scroll_offset().y as f32;
              }
-@@ -2466,7 +3074,7 @@ impl Node {
+@@ -2466,7 +3082,7 @@ impl Node {
          if matches_hoisted_content {
              if let Some(hoisted) = self.stacking_context() {
                  for hoisted_child in hoisted.neg_z_hoisted_children().rev() {
@@ -5665,7 +5673,7 @@ index 240693f..c78cd22 100644
                      let x = x - pos.x;
                      let y = y - pos.y;
                      if let Some(hit) = self
-@@ -2538,7 +3146,7 @@ impl Node {
+@@ -2538,7 +3154,7 @@ impl Node {
                  (x, y)
              };
              return Some(HitResult {
@@ -5674,7 +5682,7 @@ index 240693f..c78cd22 100644
                  x: hit_x,
                  y: hit_y,
                  is_text: false,
-@@ -2556,7 +3164,7 @@ impl Node {
+@@ -2556,7 +3172,7 @@ impl Node {
              if node.flags.is_inline_root() {
                  return Some(node);
              }
@@ -5683,7 +5691,7 @@ index 240693f..c78cd22 100644
              node = self.with(id);
          }
      }
-@@ -2624,7 +3232,7 @@ impl Node {
+@@ -2624,7 +3240,7 @@ impl Node {
      /// `layout_parent`.
      pub fn containing_block(&self) -> Option<NodeId> {
          self.oof_containing_block()
@@ -5692,7 +5700,7 @@ index 240693f..c78cd22 100644
      }
 
      /// Computes the Document-relative coordinates of the `Node`
-@@ -2692,16 +3300,16 @@ impl Node {
+@@ -2692,16 +3308,16 @@ impl Node {
 
          // Walk up the DOM parent chain from `id` to check whether it is (or is
          // inside) the target node, stopping at the inline root.
@@ -5712,7 +5720,7 @@ index 240693f..c78cd22 100644
                      Some(parent) => id = parent,
                      None => return false,
                  }
-@@ -2904,7 +3512,7 @@ impl Node {
+@@ -2904,7 +3520,7 @@ impl Node {
  /// It might be wrong to expose this since what does *equality* mean outside the dom?
  impl PartialEq for Node {
      fn eq(&self, other: &Self) -> bool {
@@ -5721,7 +5729,7 @@ index 240693f..c78cd22 100644
      }
  }
 
-@@ -2914,10 +3522,10 @@ impl std::fmt::Debug for Node {
+@@ -2914,10 +3530,10 @@ impl std::fmt::Debug for Node {
      fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
          // FIXME: update to reflect changes to fields
          f.debug_struct("NodeData")
@@ -5735,7 +5743,7 @@ index 240693f..c78cd22 100644
              .field("layout_children", &self.layout_children())
              // .field("style", &self.style)
              .field("node", &self.data)
-@@ -2937,9 +3545,9 @@ mod test {
+@@ -2937,9 +3553,9 @@ mod test {
      #[test]
      fn create_node_with_disabled_attr() {
          let mut document = BaseDocument::new(DocumentConfig::default());
@@ -5747,7 +5755,7 @@ index 240693f..c78cd22 100644
          ))));
          let node = document.get_node(node).unwrap();
 
-@@ -2956,9 +3564,9 @@ mod test {
+@@ -2956,9 +3572,9 @@ mod test {
      #[test]
      fn ignore_disabled_attr_content() {
          let mut document = BaseDocument::new(DocumentConfig::default());
@@ -5759,7 +5767,7 @@ index 240693f..c78cd22 100644
          ))));
          let node = document.get_node(node).unwrap();
 
-@@ -2975,9 +3583,9 @@ mod test {
+@@ -2975,9 +3591,9 @@ mod test {
      #[test]
      fn create_node_with_ignored_disable() {
          let mut document = BaseDocument::new(DocumentConfig::default());
@@ -5771,7 +5779,7 @@ index 240693f..c78cd22 100644
          ))));
          let node = document.get_node(node).unwrap();
 
-@@ -2994,7 +3602,7 @@ mod test {
+@@ -2994,7 +3610,7 @@ mod test {
      #[test]
      fn create_empty_enabled_node() {
          let mut document = BaseDocument::new(DocumentConfig::default());
