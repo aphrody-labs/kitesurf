@@ -183,6 +183,7 @@ import type {
 } from "@kitesurf/jsrpc-types/page-script";
 import type { CdpMutation, ConsoleEntry, ExceptionEntry } from "@kitesurf/jsrpc-types/shared";
 import type { RenderFrameArgs, PrespawnedFrame } from "../eval/oopif-render.ts";
+import { RetainedText } from "../retained-text.ts";
 
 const RENDER_DRAIN_TIMEOUT_MS = 10_000;
 const RENDER_DRAIN_GRACE_MS = 2_500;
@@ -685,7 +686,7 @@ export async function handlePage(
       } catch {}
       target.url = url;
       target.title = "";
-      target.html = "";
+      target.html = new RetainedText("");
       releaseTargetDom(target);
       target.docScan = null;
       target.docCsp = null;
@@ -710,7 +711,7 @@ export async function handlePage(
 
       if (url === "about:blank" || url === "") {
         const html = "<html><head></head><body></body></html>";
-        target.html = html;
+        target.html = new RetainedText(html);
         const blitzUrl = sanitizeBaseUrl(url);
         try {
           target.dom = createDom(html, blitzUrl);
@@ -974,7 +975,7 @@ export async function handlePage(
           if (ct.includes("application/xhtml") && sniffHead.startsWith("<html")) {
             html = '<?xml version="1.0" encoding="UTF-8"?>\n' + sniffHead;
           }
-          target.html = html;
+          target.html = new RetainedText(html);
           releaseTargetDom(target);
           target.docScan = traceSpan(
             ctx.env.HOST_TRACER,
@@ -1011,7 +1012,7 @@ export async function handlePage(
           }
           releaseTargetDom(target);
           target.docScan = scanDocument(wrapper);
-          target.html = wrapper;
+          target.html = new RetainedText(wrapper);
           pageHtml = wrapper;
         }
 
@@ -1169,7 +1170,7 @@ export async function handlePage(
       const requestedUrl = target.url || "about:blank";
       const url = sanitizeBaseUrl(requestedUrl);
       target.url = url;
-      target.html = html;
+      target.html = new RetainedText(html);
       releaseTargetDom(target);
       target.docCsp = null;
       target.docCspReportOnly = null;
@@ -2051,7 +2052,7 @@ async function pushNavigateToPageScriptInner(
       }
       console.log(
         `[kitesurf-nav] htmlPreview length=${target.html.length} ` +
-          `first200=${JSON.stringify(target.html.slice(0, 200))}`,
+          `first200=${JSON.stringify(target.html.text().slice(0, 200))}`,
       );
     }
     if (scriptBundle) {

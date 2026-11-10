@@ -16,6 +16,7 @@ import type { DiagSpanTracker } from "./diag-spans.ts";
 import type { SandboxOutboundOverride } from "../eval/outbound.ts";
 import type { WheelQueue } from "./wheel-queue.ts";
 import type { StyleCache } from "./style-cache.ts";
+import type { RetainedText } from "../retained-text.ts";
 
 export type CdpMethod = keyof ProtocolMapping.Commands;
 
@@ -285,7 +286,8 @@ export interface TargetState {
   sessions: Set<string>;
   url: string;
   title: string;
-  html: string;
+  /** The document source; read only to rebuild a released `dom`. */
+  html: RetainedText;
   dom: DomHandle | null;
   docScan: DocScan | null;
   domEpoch: number;
@@ -357,7 +359,7 @@ export interface CompiledScriptMeta {
   hash: string;
   sourceMapURL: string;
   isModule: boolean;
-  source?: string;
+  source?: RetainedText;
 }
 
 export const ISOLATED_WORLD_CONTEXT_ID = 2;

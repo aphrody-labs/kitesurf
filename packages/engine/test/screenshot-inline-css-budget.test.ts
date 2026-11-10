@@ -14,6 +14,7 @@ import type { DispatchCtx } from "../src/cdp/dispatch.ts";
 import { setDomFactory } from "../src/cdp/dom-release.ts";
 import { handlePage } from "../src/cdp/page.ts";
 import { StyleCache } from "../src/cdp/style-cache.ts";
+import { RetainedText } from "../src/retained-text.ts";
 import type { TargetState } from "../src/cdp/types.ts";
 import type { DomHandle } from "../src/wasm.ts";
 
@@ -48,7 +49,7 @@ async function capture(links: number, chars: number): Promise<string[]> {
     targetId: "T",
     frameId: "F",
     url: "https://page.test/index.html",
-    html: "<html></html>",
+    html: new RetainedText("<html></html>"),
     dom: null,
     domEpoch: 0,
   } as unknown as TargetState;
