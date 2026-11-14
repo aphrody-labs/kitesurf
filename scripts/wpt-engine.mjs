@@ -6,26 +6,21 @@
 
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { OPTIONS_FILE, startEngine } from "../packages/engine-server/server.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const ENGINE_DIR = resolve(ROOT, "packages/engine");
 export const DEFAULT_DIST = resolve(ENGINE_DIR, ".wpt-dist");
-const OPTIONS_FILE = "engine-mf.json";
 const fromEngine = createRequire(resolve(ENGINE_DIR, "package.json"));
 const engineDep = (name) => import(pathToFileURL(fromEngine.resolve(name)).href);
 const USAGE = `usage: node scripts/wpt-engine.mjs prepare [--dist <dir>] [--config <file>]
        node scripts/wpt-engine.mjs serve --port <n> [--dist <dir>] [--assets <dir>]
                                   [--inspector-port <n>] [--var KEY:VALUE]...
                                   [--v8-flags "<flags>"]`;
-
-const ENGINE_RULES = [
-  { type: "CompiledWasm", include: ["**/*.wasm"] },
-  { type: "Text", include: ["**/*.glue.js", "*.css", "**/*.css", "**/*.dat"] },
-  { type: "Data", include: ["**/*.woff2", "**/*.bin"] },
-];
 
 const DROP = new Set([
   "rootPath",
@@ -104,59 +99,11 @@ export async function prepare(dist = DEFAULT_DIST, config = resolve(ENGINE_DIR, 
   return options;
 }
 
-function distModules(root, entry, testRegExps, compiledRules) {
-  const modules = [{ type: "ESModule", path: resolve(root, entry) }];
-  const walk = (dir) => {
-    for (const item of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    )) {
-      const full = resolve(dir, item.name);
-      if (item.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      const name = relative(root, full).replaceAll("\\", "/");
-      if (name === entry) continue;
-      const rule = compiledRules.find((candidate) => testRegExps(candidate.include, name));
-      if (rule) modules.push({ type: rule.type, path: full });
-    }
-  };
-  walk(root);
-  return modules;
-}
-
 async function serve(options) {
-  if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
-    throw new Error("serve needs a valid --port");
-  }
-  const { Miniflare, compileModuleRules, convertV4MiniflareOptions, testRegExps } =
-    await engineDep("miniflare");
-  const workerOptions = JSON.parse(readFileSync(resolve(options.dist, OPTIONS_FILE), "utf8"));
-  const assets = workerOptions.assets && {
-    ...workerOptions.assets,
-    directory: options.assets ?? resolve(options.dist, workerOptions.assets.directory),
-  };
-  const engine = {
-    ...workerOptions,
-    name: "kitesurf-engine",
-    modulesRoot: options.dist,
-    modules: distModules(options.dist, "index.js", testRegExps, compileModuleRules(ENGINE_RULES)),
-    bindings: { ...workerOptions.bindings, ...options.vars },
-    assets,
-  };
   // Miniflare reads workerd's V8 flags from this variable, split on single spaces.
   if (options.v8Flags !== undefined)
     process.env.MINIFLARE_WORKERD_V8_FLAGS = options.v8Flags.trim().split(/\s+/).join(" ");
-  const miniflare = new Miniflare(
-    convertV4MiniflareOptions({
-      host: "127.0.0.1",
-      port: options.port,
-      inspectorPort: options.inspectorPort,
-      cf: false,
-      workers: [engine],
-    }),
-  );
-  const url = await miniflare.ready;
+  const { miniflare, url } = await startEngine(options);
   const v8Flags = process.env.MINIFLARE_WORKERD_V8_FLAGS;
   console.log(
     `[wpt-engine] ready on ${url.href} (dist ${options.dist}${v8Flags ? `, V8 flags ${v8Flags}` : ""})`,

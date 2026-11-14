@@ -27,7 +27,7 @@ js_library(
     srcs = ["wpt-engine.mjs"],
     data = ["//packages/engine:package_json"],
     deps = [
-        "//packages/engine:node_modules/miniflare",
+        "//packages/engine-server:pkg",
         "//packages/engine:node_modules/wrangler",
     ],
 )
@@ -406,6 +406,8 @@ _HELPERS_DATA = glob(["*.mjs"]) + [
     # engine-e2e-config.test.mjs loads the engine's e2e vitest config.
     "//:node_modules/typescript",
     "//packages/engine:e2e_config",
+    # wpt-engine.test.mjs serves a dist through the engine server.
+    "//packages/engine-server:pkg",
     "//:pw_expectations",
     "//:pw_tests",
     "//:wpt_expectations",

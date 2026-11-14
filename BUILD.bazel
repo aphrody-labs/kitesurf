@@ -70,6 +70,7 @@ _CONFIG_PACKAGES = [
     "packages/dom-shim",
     "packages/engine",
     "packages/engine/test/e2e",
+    "packages/engine-server",
     "packages/jsrpc-types",
     "packages/kitesurf-cli",
     "packages/page-renderer",
