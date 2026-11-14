@@ -27,7 +27,9 @@
     "KITESURF_ENV": "production",
     "KITESURF_VERSION": "dev",
     "KITESURF_RESOURCE_DRAIN_QUIET_TURNS": "",
-    "KITESURF_SIMULATE_PROD_EVAL": "",
+    // "1" gives page isolates workerd's local-only native eval, so CDP evaluation and page eval
+    // run on V8 instead of boa. Cloudflare rejects the flag; only set it on a local runtime.
+    "KITESURF_NATIVE_EVAL": "",
     "KITESURF_DISABLE_PARTIAL_RASTER": "",
     "KITESURF_PAGE_CPU_MS_CAP": "",
     "KITESURF_PAGE_WALL_MS_CAP": "",
@@ -63,7 +65,7 @@
         "KITESURF_ENV": "local",
         "KITESURF_VERSION": "dev",
         "KITESURF_RESOURCE_DRAIN_QUIET_TURNS": "5",
-        "KITESURF_SIMULATE_PROD_EVAL": "",
+        "KITESURF_NATIVE_EVAL": "",
         "KITESURF_DISABLE_PARTIAL_RASTER": "",
         "KITESURF_PAGE_CPU_MS_CAP": "",
         "KITESURF_PAGE_WALL_MS_CAP": "",
