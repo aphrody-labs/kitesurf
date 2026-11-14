@@ -22,6 +22,7 @@ import type { QueryDomArgs, QueryDomMethod, QueryDomResult } from "@kitesurf/jsr
 import type { RenderPortStub } from "@kitesurf/jsrpc-types/page-renderer";
 import type { PageScriptStub, UpstreamEventHandler } from "./page-script.ts";
 import { isIsolateGoneError, notifyIsolateLimit } from "./limit-registry.ts";
+import { collectRetiredWorkers } from "./retired-worker-gc.ts";
 
 export type RpcSessionCallable = Pick<RetainedPageScriptSessionStub, "close"> &
   Pick<RetainedPageScriptSession, "call"> & {
@@ -322,13 +323,15 @@ export class PageScriptRpcSession implements PageScriptStub {
     // Give the retained close one grace window before the entrypoint kill, unless nothing waits on
     // the close: until the kill lands, the isolate keeps holding a loaded-worker slot.
     const sessionClosed = opts.atOnce ? Promise.resolve() : (this.closeReady ?? Promise.resolve());
-    this.killing = settleTeardownWithin(sessionClosed).then(() => {
-      if (this.isolateGone) return;
-      this.isolateGone = true;
-      try {
-        return settleTeardownWithin(Promise.resolve(ep.killIsolate?.(reason)));
-      } catch {}
-    });
+    this.killing = settleTeardownWithin(sessionClosed)
+      .then(() => {
+        if (this.isolateGone) return;
+        this.isolateGone = true;
+        try {
+          return settleTeardownWithin(Promise.resolve(ep.killIsolate?.(reason)));
+        } catch {}
+      })
+      .finally(collectRetiredWorkers);
     return this.killing;
   }
 

@@ -12,6 +12,7 @@ import { localTraceParentProps } from "../tracing-local.ts";
 import { attributionTails, type AttributionTailExports } from "./attribution-tail.ts";
 import { getFontBytes, getImageBytes } from "./resource-store.ts";
 import { isIsolateGoneError } from "./limit-registry.ts";
+import { collectRetiredWorkers } from "./retired-worker-gc.ts";
 import type { Tracer } from "../tracing.ts";
 import type {
   PageRendererEntrypoint,
@@ -277,7 +278,9 @@ export class PageRendererManager {
     // for the kill to abort it.
     if (!gone && stub && typeof stub.killIsolate === "function") {
       try {
-        Promise.resolve(stub.killIsolate(reason)).catch(() => {});
+        Promise.resolve(stub.killIsolate(reason))
+          .catch(() => {})
+          .finally(collectRetiredWorkers);
       } catch {}
     }
   }
