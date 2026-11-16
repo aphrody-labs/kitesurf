@@ -537,6 +537,9 @@ pub struct DocScanner {
     pending: Option<String>,
     /// Pending length at which the sniff runs next; doubling keeps a long prolog linear.
     next_sniff: usize,
+    /// Whether the document's own leading U+FEFF is still to be dropped. The tokenizer drops a
+    /// leading one on every feed, and this scanner feeds it once per chunk.
+    strip_bom: bool,
 }
 
 // wasm-bindgen requires this marker for exported receivers. A panic leaves the tokenizer
@@ -556,11 +559,18 @@ impl DocScanner {
         let sink = ScanSink {
             state: RefCell::new(ScanState::default()),
         };
+        // The tokenizer drops a leading U+FEFF on every feed; this scanner feeds it per chunk,
+        // so it drops the document's own mark once in `push_str` instead.
+        let opts = TokenizerOpts {
+            discard_bom: false,
+            ..TokenizerOpts::default()
+        };
         DocScanner {
-            tokenizer: Tokenizer::new(sink, TokenizerOpts::default()),
+            tokenizer: Tokenizer::new(sink, opts),
             input: BufferQueue::default(),
             pending: Some(String::new()),
             next_sniff: 0,
+            strip_bom: true,
         }
     }
 
@@ -580,6 +590,12 @@ impl DocScanner {
 
 impl DocScanner {
     fn push_str(&mut self, chunk: &str) {
+        let chunk = if self.strip_bom && !chunk.is_empty() {
+            self.strip_bom = false;
+            chunk.strip_prefix('\u{feff}').unwrap_or(chunk)
+        } else {
+            chunk
+        };
         let Some(pending) = &mut self.pending else {
             self.feed(chunk);
             return;

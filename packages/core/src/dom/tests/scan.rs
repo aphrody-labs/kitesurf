@@ -900,3 +900,23 @@ fn meta_csp_is_captured_in_document_order() {
     assert_eq!(csp[0], "script-src 'self'");
     assert_eq!(csp[1], "default-src https:");
 }
+
+// html5ever's tokenizer drops a leading U+FEFF on every `feed`, and the scanner feeds it once per
+// chunk, so only the document's own first character is a BOM: one that starts a later chunk is
+// part of the script text.
+#[test]
+fn a_byte_order_mark_inside_the_document_survives_chunking() {
+    let html = "<script>window.x='aaa\u{feff}'</script>";
+    let whole = scan_value(html);
+    assert_eq!(
+        scan_in_chunks(html, html.len()),
+        whole,
+        "one push reads the document"
+    );
+    let boundary = "<script>window.x='aaa".len();
+    assert_eq!(
+        scan_in_chunks(html, boundary),
+        whole,
+        "a U+FEFF that starts the second chunk is script text"
+    );
+}
