@@ -133,3 +133,37 @@ fn hiding_an_ancestor_keeps_an_inner_scroll_offset() {
     dom.resolve_layout();
     assert_eq!(scroll_offset(), 500.0, "showing lost the scroll offset");
 }
+
+/// A row is consumed by cell collection and a flattened inline by the inline embedder, so neither
+/// passes through the child collection that records the display. Both must still read as boxed
+/// once the subtree is shown again, which is what the offset reads walk.
+#[test]
+fn a_shown_row_and_flattened_inline_read_as_boxed_again() {
+    let dom = DomHandle::new(
+        "<!DOCTYPE html><table><tr id=r><td id=c><div style=\"height:40px\">x</div></td></tr></table>\
+         <p><span id=s>inline <span style=\"display:inline-block;width:70px\">atomic</span></span></p>",
+        "https://test.example/",
+    );
+    dom.set_viewport(800, 600);
+    dom.resolve_layout();
+    let r = dom.query_selector("#r").unwrap() as u32;
+    let s = dom.query_selector("#s").unwrap() as u32;
+
+    assert!(dom.set_attribute(r, "style", "display:none"));
+    assert!(dom.set_attribute(s, "style", "display:none"));
+    dom.resolve_layout();
+    assert!(dom.set_attribute(r, "style", ""));
+    assert!(dom.set_attribute(s, "style", ""));
+    dom.resolve_layout();
+
+    let doc = dom.doc.borrow();
+    for (id, what) in [(r, "row"), (s, "flattened inline")] {
+        let node = doc.get_node(dom.resolve_node_id(id).unwrap()).unwrap();
+        use ::style::values::specified::box_::{DisplayInside, DisplayOutside};
+        let display = *node.display_constructed_as();
+        assert!(
+            !(display.outside() == DisplayOutside::None && display.inside() == DisplayInside::None),
+            "the shown {what} still records display:none"
+        );
+    }
+}
