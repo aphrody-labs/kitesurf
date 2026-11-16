@@ -8,9 +8,9 @@ description: Triage a Kitesurf bug report. Reproduce it in Kitesurf and in Chrom
 Triage one Kitesurf bug report from start to finish, in four steps:
 reproduce, diagnose, verify, fix.
 
-Maintainers run this skill on their own machines. CI runs the same skill
-through `withastro/triagebot-action`. Based on that action's
-`examples/skills/triage`.
+Maintainers run this skill on their own machines. An automated triage
+bot may run the same skill later; that is not set up yet. Based on
+`withastro/triagebot-action`'s `examples/skills/triage`.
 
 ## What a Kitesurf bug is
 

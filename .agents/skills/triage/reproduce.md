@@ -102,9 +102,7 @@ Write the repro into `triageDir`:
 `pnpm run dev` runs the Bazel dev build (`bazel run
 //packages/engine:dev_build`) and then `wrangler dev`. Bazel only rebuilds
 what changed, so restarts are quick once the first build is done. The
-first build compiles the Rust to wasm and is slow. In CI the workflow
-runs `pnpm run build` before the skill, from the Bazel cache that
-`ci.yml` saves on `main`.
+first build compiles the Rust to wasm and is slow.
 
 ```bash
 source scripts/dev-ports.sh          # sets KITESURF_PORT for this worktree
