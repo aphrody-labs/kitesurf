@@ -377,6 +377,36 @@ fn width_changes_lay_out_evicted_roots_without_reshaping() {
     );
 }
 
+/// A restyle that changes how text breaks must rebuild an evicted root rather than lay it out from
+/// the summary it took under the old style.
+#[test]
+fn restyling_an_evicted_paragraph_lays_out_the_new_style() {
+    let (keep, evict) = with_and_without_eviction(&page(120));
+    let far = evicted_count(evict.doc.borrow().as_ref());
+    assert!(
+        far > 60,
+        "precondition: most of the page is evicted ({far})"
+    );
+
+    for dom in [&keep, &evict] {
+        let p = dom.query_selector("#p60").unwrap() as u32;
+        assert!(dom.set_attribute(p, "style", "white-space: nowrap"));
+    }
+    keep.resolve_layout();
+    evict.resolve_layout();
+
+    assert_eq!(
+        geometry(keep.doc.borrow().as_ref()),
+        geometry(evict.doc.borrow().as_ref()),
+        "an evicted root restyled to nowrap kept its old breaks"
+    );
+    assert_eq!(
+        boxes(keep.doc.borrow().as_ref()),
+        boxes(evict.doc.borrow().as_ref()),
+        "an evicted root restyled to nowrap built different boxes"
+    );
+}
+
 /// The fidelity page plus paragraphs holding absolutely positioned boxes whose
 /// static position comes from their line.
 fn annotated_page() -> String {

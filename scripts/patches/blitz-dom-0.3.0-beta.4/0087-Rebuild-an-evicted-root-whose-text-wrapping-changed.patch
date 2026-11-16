@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
+Date: Mon, 16 Nov 2026 15:20:09 +0000
+Subject: [PATCH] Rebuild an evicted root whose text wrapping changed
+
+A root evicted from shaping keeps the break summary it took under the style of the time, and only
+RELAYOUT damage reached it when the style changed how text breaks, so it laid out from the old
+summary. Compare the wrap mode and tab size too, which sends the rebuild path ALL_DAMAGE.
+---
+ src/layout/damage.rs | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/layout/damage.rs b/src/layout/damage.rs
+index 4193e6e..a6afb2d 100644
+--- a/src/layout/damage.rs
++++ b/src/layout/damage.rs
+@@ -565,7 +565,9 @@ pub(crate) fn compute_layout_damage(old: &ComputedValues, new: &ComputedValues)
+                 || old_text.overflow_wrap != new_text.overflow_wrap
+                 || old_text.letter_spacing != new_text.letter_spacing
+                 || old_text.word_spacing != new_text.word_spacing
+-                || old_text.text_rendering != new_text.text_rendering)
++                || old_text.text_rendering != new_text.text_rendering
++                || old_text.text_wrap_mode != new_text.text_wrap_mode
++                || old_text.tab_size != new_text.tab_size)
+         {
+             return true;
+         }
