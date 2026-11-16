@@ -496,3 +496,24 @@ test("innerHTML, outerHTML and textContent replacement drop the replaced name", 
     text: gone,
   });
 });
+
+// An inserted script's `var` must not shadow a global the page already made: from boa the wrapper
+// reports an inherited name for it, so only an absent name may be created.
+test("an inserted script's var keeps the page's global value", async ({ page }) => {
+  await setContent(
+    page,
+    `<script>
+    window.dataLayer = [{ a: 1 }];
+    window.ns = { widgets: {} };
+    var s = document.createElement("script");
+    s.textContent =
+      "var dataLayer = dataLayer || []; dataLayer.push({ b: 2 });" +
+      "var ns = ns || {}; ns.widgets.flow = 1;";
+    document.head.appendChild(s);
+    // An inserted classic script runs synchronously when it is appended.
+    window.varKept = JSON.stringify({ dataLayer: window.dataLayer, ns: window.ns });
+  </script>`,
+  );
+  const kept = JSON.parse((await page.evaluate("window.varKept")) as string);
+  expect(kept).toEqual({ dataLayer: [{ a: 1 }, { b: 2 }], ns: { widgets: { flow: 1 } } });
+}, 60_000);
