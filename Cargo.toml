@@ -78,6 +78,7 @@ blitz-html = { path = "packages/core/target/vendor-patched/blitz-html-0.3.0-beta
 # a consumer does not have to infer it back from geometry. The scene
 # rasterizer crates compile scene_record.rs, which implements the trait.
 anyrender = { path = "packages/core/target/vendor-patched/anyrender-0.14.0" }
+anyrender_svg = { path = "packages/core/target/vendor-patched/anyrender_svg-0.15.0" }
 # Patched to implement PaintScene::push_clip_path with vello_cpu's clip
 # paths, which clip each draw instead of compositing a separate layer.
 anyrender_vello_cpu = { path = "packages/core/target/vendor-patched/anyrender_vello_cpu-0.18.0" }

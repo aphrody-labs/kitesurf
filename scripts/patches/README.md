@@ -68,29 +68,30 @@ All plumbing git invocations run with `GIT_CONFIG_GLOBAL=/dev/null` /
 
 ## Provenance
 
-| Crate                 | Version        | Upstream                                         | Source           |
-| --------------------- | -------------- | ------------------------------------------------ | ---------------- |
-| `parley`              | `0.12.0`       | `linebender/parley`, path `parley/`              | registry tarball |
-| `parley_engine`       | `0.12.0`       | `linebender/parley`, path `parley_engine/`       | registry tarball |
-| `blitz-dom`           | `0.3.0-beta.4` | `DioxusLabs/blitz`, path `packages/blitz-dom/`   | registry tarball |
-| `blitz-paint`         | `0.3.0-beta.4` | `DioxusLabs/blitz`, path `packages/blitz-paint/` | registry tarball |
-| `blitz-html`          | `0.3.0-beta.4` | `DioxusLabs/blitz`, path `packages/blitz-html/`  | registry tarball |
-| `anyrender`           | `0.14.0`       | `DioxusLabs/anyrender`, path `crates/anyrender/` | registry tarball |
-| `anyrender_vello_cpu` | `0.18.0`       | `DioxusLabs/anyrender`                           | registry tarball |
-| `taffy`               | `0.15.0`       | `DioxusLabs/taffy`                               | registry tarball |
-| `stylo_taffy`         | `0.3.0-beta.4` | `DioxusLabs/blitz`, path `packages/stylo_taffy/` | registry tarball |
-| `stylo`               | `0.22.0`       | servo `stylo`                                    | registry tarball |
-| `selectors`           | `0.41.0`       | servo `selectors`                                | registry tarball |
-| `boa_ast`             | `0.22.0`       | `boa-dev/boa`, path `core/ast/`                  | registry tarball |
-| `boa_interner`        | `0.22.0`       | `boa-dev/boa`, path `core/interner/`             | registry tarball |
-| `boa_gc`              | `0.22.0`       | `boa-dev/boa`, path `core/gc/`                   | registry tarball |
-| `boa_engine`          | `0.22.0`       | `boa-dev/boa`, path `core/engine/`               | registry tarball |
-| `boa_parser`          | `0.22.0`       | `boa-dev/boa`, path `core/parser/`               | registry tarball |
-| `usvg`                | `0.48.1`       | `linebender/resvg`, path `crates/usvg/`          | registry tarball |
-| `vello_common`        | `0.3.0`        | `linebender/vello`, path `vello_common/`         | registry tarball |
-| `vello_cpu`           | `0.3.0`        | `linebender/vello`, path `vello_cpu/`            | registry tarball |
-| `ratatui-image`       | `8.1.1`        | `benjajaja/ratatui-image`                        | registry tarball |
-| `jpeg-encoder`        | `0.7.0`        | `vstroebel/jpeg-encoder`                         | registry tarball |
+| Crate                 | Version        | Upstream                                             | Source           |
+| --------------------- | -------------- | ---------------------------------------------------- | ---------------- |
+| `parley`              | `0.12.0`       | `linebender/parley`, path `parley/`                  | registry tarball |
+| `parley_engine`       | `0.12.0`       | `linebender/parley`, path `parley_engine/`           | registry tarball |
+| `blitz-dom`           | `0.3.0-beta.4` | `DioxusLabs/blitz`, path `packages/blitz-dom/`       | registry tarball |
+| `blitz-paint`         | `0.3.0-beta.4` | `DioxusLabs/blitz`, path `packages/blitz-paint/`     | registry tarball |
+| `blitz-html`          | `0.3.0-beta.4` | `DioxusLabs/blitz`, path `packages/blitz-html/`      | registry tarball |
+| `anyrender`           | `0.14.0`       | `DioxusLabs/anyrender`, path `crates/anyrender/`     | registry tarball |
+| `anyrender_svg`       | `0.15.0`       | `DioxusLabs/anyrender`, path `crates/anyrender_svg/` | registry tarball |
+| `anyrender_vello_cpu` | `0.18.0`       | `DioxusLabs/anyrender`                               | registry tarball |
+| `taffy`               | `0.15.0`       | `DioxusLabs/taffy`                                   | registry tarball |
+| `stylo_taffy`         | `0.3.0-beta.4` | `DioxusLabs/blitz`, path `packages/stylo_taffy/`     | registry tarball |
+| `stylo`               | `0.22.0`       | servo `stylo`                                        | registry tarball |
+| `selectors`           | `0.41.0`       | servo `selectors`                                    | registry tarball |
+| `boa_ast`             | `0.22.0`       | `boa-dev/boa`, path `core/ast/`                      | registry tarball |
+| `boa_interner`        | `0.22.0`       | `boa-dev/boa`, path `core/interner/`                 | registry tarball |
+| `boa_gc`              | `0.22.0`       | `boa-dev/boa`, path `core/gc/`                       | registry tarball |
+| `boa_engine`          | `0.22.0`       | `boa-dev/boa`, path `core/engine/`                   | registry tarball |
+| `boa_parser`          | `0.22.0`       | `boa-dev/boa`, path `core/parser/`                   | registry tarball |
+| `usvg`                | `0.48.1`       | `linebender/resvg`, path `crates/usvg/`              | registry tarball |
+| `vello_common`        | `0.3.0`        | `linebender/vello`, path `vello_common/`             | registry tarball |
+| `vello_cpu`           | `0.3.0`        | `linebender/vello`, path `vello_cpu/`                | registry tarball |
+| `ratatui-image`       | `8.1.1`        | `benjajaja/ratatui-image`                            | registry tarball |
+| `jpeg-encoder`        | `0.7.0`        | `vstroebel/jpeg-encoder`                             | registry tarball |
 
 fontique is no longer patched: 0.12 offers every face with the best match's
 attributes, which is what our unicode-range-subset patch did.
@@ -133,6 +134,10 @@ One-line orientation (see each series' patches for the full why):
   reveal. Consumed by the scene wire (`scene_record.rs`). Also
   `push_clip_path`/`pop_clip_path`, defaulted to a clip layer, so a
   backend can clip each draw instead of compositing a group.
+- **anyrender_svg** — composites alpha masks and white luminance masks
+  through an isolated layer and a `SrcIn` layer, instead of drawing a
+  masked group unmasked. Other luminance masks and nested mask
+  references still draw unmasked. Upstreamable.
 - **anyrender_vello_cpu** - implements `push_clip_path` with vello_cpu's
   clip paths. The scene replayer uses it for whole-pixel rect clips,
   where it gives the same pixels as a clip layer without the extra

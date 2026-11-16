@@ -102,6 +102,7 @@ cargo_workspaces.patched(
     patches_marker = "//scripts:patches/README.md",
     sha256 = {
         "anyrender-0.14.0": "1755d0ef8e00e87b6b825dfbe5a35d34d3b302e97e80a48e93f9cd361fbada06",
+        "anyrender_svg-0.15.0": "39327debd1bdca190d086c107825a5dc4c665be31e99e5c0854345a050d08cad",
         "anyrender_vello_cpu-0.18.0":
             "a09d9356dd2b2f032345711a350c0e2326a854cb5070f899265bc80fb33884b1",
         "blitz-dom-0.3.0-beta.4":

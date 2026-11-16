@@ -273,9 +273,9 @@
     "//bazel/rust:crates.bzl%cargo_workspaces": {
       "general": {
         "bzlTransitiveDigest": "Azt4Ub+gfepkRli3W2Ekw9F1bhXQ2J4Sc24M58PeNEs=",
-        "usagesDigest": "fbK9zGiubAA06rvLe2I0KfYyjGlq6F+wTeB4ZbRdtKY=",
+        "usagesDigest": "ww3Njjsg+Kgx2aoiWtyenUyvFzPmsI3addrH35oYtEU=",
         "recordedInputs": [
-          "FILE:@@//Cargo.toml 32964f1a43dd5ace3e91115f9e5f8bd6f34deda4e32fbbe9d40aae6a3aff7d06"
+          "FILE:@@//Cargo.toml 3d6b07f234d0df5c40463723777a1410543f771498921bf8bbdcfc13a660ca46"
         ],
         "generatedRepoSpecs": {
           "patched_vello_cpu-0.3.0": {
@@ -347,6 +347,15 @@
               "crate": "anyrender",
               "version": "0.14.0",
               "sha256": "1755d0ef8e00e87b6b825dfbe5a35d34d3b302e97e80a48e93f9cd361fbada06",
+              "patches_marker": "@@//scripts:patches/README.md"
+            }
+          },
+          "patched_anyrender_svg-0.15.0": {
+            "repoRuleId": "@@//bazel/rust:crates.bzl%_patched_crate",
+            "attributes": {
+              "crate": "anyrender_svg",
+              "version": "0.15.0",
+              "sha256": "39327debd1bdca190d086c107825a5dc4c665be31e99e5c0854345a050d08cad",
               "patches_marker": "@@//scripts:patches/README.md"
             }
           },
@@ -490,6 +499,7 @@
                 "blitz-paint-0.3.0-beta.4": "@@+cargo_workspaces+patched_blitz-paint-0.3.0-beta.4//:BUILD.bazel",
                 "blitz-html-0.3.0-beta.4": "@@+cargo_workspaces+patched_blitz-html-0.3.0-beta.4//:BUILD.bazel",
                 "anyrender-0.14.0": "@@+cargo_workspaces+patched_anyrender-0.14.0//:BUILD.bazel",
+                "anyrender_svg-0.15.0": "@@+cargo_workspaces+patched_anyrender_svg-0.15.0//:BUILD.bazel",
                 "anyrender_vello_cpu-0.18.0": "@@+cargo_workspaces+patched_anyrender_vello_cpu-0.18.0//:BUILD.bazel",
                 "taffy-0.15.0": "@@+cargo_workspaces+patched_taffy-0.15.0//:BUILD.bazel",
                 "stylo_taffy-0.3.0-beta.4": "@@+cargo_workspaces+patched_stylo_taffy-0.3.0-beta.4//:BUILD.bazel",
@@ -523,6 +533,7 @@
                 "blitz-paint": "blitz-paint-0.3.0-beta.4",
                 "blitz-html": "blitz-html-0.3.0-beta.4",
                 "anyrender": "anyrender-0.14.0",
+                "anyrender_svg": "anyrender_svg-0.15.0",
                 "anyrender_vello_cpu": "anyrender_vello_cpu-0.18.0",
                 "taffy": "taffy-0.15.0",
                 "stylo_taffy": "stylo_taffy-0.3.0-beta.4",
@@ -546,6 +557,7 @@
                 "blitz-paint": "@@+cargo_workspaces+patched_blitz-paint-0.3.0-beta.4//:BUILD.bazel",
                 "blitz-html": "@@+cargo_workspaces+patched_blitz-html-0.3.0-beta.4//:BUILD.bazel",
                 "anyrender": "@@+cargo_workspaces+patched_anyrender-0.14.0//:BUILD.bazel",
+                "anyrender_svg": "@@+cargo_workspaces+patched_anyrender_svg-0.15.0//:BUILD.bazel",
                 "anyrender_vello_cpu": "@@+cargo_workspaces+patched_anyrender_vello_cpu-0.18.0//:BUILD.bazel",
                 "taffy": "@@+cargo_workspaces+patched_taffy-0.15.0//:BUILD.bazel",
                 "stylo_taffy": "@@+cargo_workspaces+patched_stylo_taffy-0.3.0-beta.4//:BUILD.bazel",
@@ -563,6 +575,7 @@
               "patches_marker": "@@//scripts:patches/README.md",
               "sha256": {
                 "anyrender-0.14.0": "1755d0ef8e00e87b6b825dfbe5a35d34d3b302e97e80a48e93f9cd361fbada06",
+                "anyrender_svg-0.15.0": "39327debd1bdca190d086c107825a5dc4c665be31e99e5c0854345a050d08cad",
                 "anyrender_vello_cpu-0.18.0": "a09d9356dd2b2f032345711a350c0e2326a854cb5070f899265bc80fb33884b1",
                 "blitz-dom-0.3.0-beta.4": "a814bfd3ad19e6d8d26f99c75188062baca499564f9abe44250230962427d183",
                 "blitz-html-0.3.0-beta.4": "eddd638e05f3f3efb9f2d37f0406e7834ea023727e1678524488aa70eb639615",
@@ -603,6 +616,7 @@
                 "blitz-paint": "blitz-paint-0.3.0-beta.4",
                 "blitz-html": "blitz-html-0.3.0-beta.4",
                 "anyrender": "anyrender-0.14.0",
+                "anyrender_svg": "anyrender_svg-0.15.0",
                 "anyrender_vello_cpu": "anyrender_vello_cpu-0.18.0",
                 "taffy": "taffy-0.15.0",
                 "stylo_taffy": "stylo_taffy-0.3.0-beta.4",
@@ -626,6 +640,7 @@
                 "blitz-paint": "@@+cargo_workspaces+patched_blitz-paint-0.3.0-beta.4//:BUILD.bazel",
                 "blitz-html": "@@+cargo_workspaces+patched_blitz-html-0.3.0-beta.4//:BUILD.bazel",
                 "anyrender": "@@+cargo_workspaces+patched_anyrender-0.14.0//:BUILD.bazel",
+                "anyrender_svg": "@@+cargo_workspaces+patched_anyrender_svg-0.15.0//:BUILD.bazel",
                 "anyrender_vello_cpu": "@@+cargo_workspaces+patched_anyrender_vello_cpu-0.18.0//:BUILD.bazel",
                 "taffy": "@@+cargo_workspaces+patched_taffy-0.15.0//:BUILD.bazel",
                 "stylo_taffy": "@@+cargo_workspaces+patched_stylo_taffy-0.3.0-beta.4//:BUILD.bazel",
@@ -643,6 +658,7 @@
               "patches_marker": "@@//scripts:patches/README.md",
               "sha256": {
                 "anyrender-0.14.0": "1755d0ef8e00e87b6b825dfbe5a35d34d3b302e97e80a48e93f9cd361fbada06",
+                "anyrender_svg-0.15.0": "39327debd1bdca190d086c107825a5dc4c665be31e99e5c0854345a050d08cad",
                 "anyrender_vello_cpu-0.18.0": "a09d9356dd2b2f032345711a350c0e2326a854cb5070f899265bc80fb33884b1",
                 "blitz-dom-0.3.0-beta.4": "a814bfd3ad19e6d8d26f99c75188062baca499564f9abe44250230962427d183",
                 "blitz-html-0.3.0-beta.4": "eddd638e05f3f3efb9f2d37f0406e7834ea023727e1678524488aa70eb639615",
@@ -683,6 +699,7 @@
                 "blitz-paint": "blitz-paint-0.3.0-beta.4",
                 "blitz-html": "blitz-html-0.3.0-beta.4",
                 "anyrender": "anyrender-0.14.0",
+                "anyrender_svg": "anyrender_svg-0.15.0",
                 "anyrender_vello_cpu": "anyrender_vello_cpu-0.18.0",
                 "taffy": "taffy-0.15.0",
                 "stylo_taffy": "stylo_taffy-0.3.0-beta.4",
@@ -706,6 +723,7 @@
                 "blitz-paint": "@@+cargo_workspaces+patched_blitz-paint-0.3.0-beta.4//:BUILD.bazel",
                 "blitz-html": "@@+cargo_workspaces+patched_blitz-html-0.3.0-beta.4//:BUILD.bazel",
                 "anyrender": "@@+cargo_workspaces+patched_anyrender-0.14.0//:BUILD.bazel",
+                "anyrender_svg": "@@+cargo_workspaces+patched_anyrender_svg-0.15.0//:BUILD.bazel",
                 "anyrender_vello_cpu": "@@+cargo_workspaces+patched_anyrender_vello_cpu-0.18.0//:BUILD.bazel",
                 "taffy": "@@+cargo_workspaces+patched_taffy-0.15.0//:BUILD.bazel",
                 "stylo_taffy": "@@+cargo_workspaces+patched_stylo_taffy-0.3.0-beta.4//:BUILD.bazel",
@@ -723,6 +741,7 @@
               "patches_marker": "@@//scripts:patches/README.md",
               "sha256": {
                 "anyrender-0.14.0": "1755d0ef8e00e87b6b825dfbe5a35d34d3b302e97e80a48e93f9cd361fbada06",
+                "anyrender_svg-0.15.0": "39327debd1bdca190d086c107825a5dc4c665be31e99e5c0854345a050d08cad",
                 "anyrender_vello_cpu-0.18.0": "a09d9356dd2b2f032345711a350c0e2326a854cb5070f899265bc80fb33884b1",
                 "blitz-dom-0.3.0-beta.4": "a814bfd3ad19e6d8d26f99c75188062baca499564f9abe44250230962427d183",
                 "blitz-html-0.3.0-beta.4": "eddd638e05f3f3efb9f2d37f0406e7834ea023727e1678524488aa70eb639615",
@@ -1083,15 +1102,15 @@
           "REPO_MAPPING:rules_rust+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
-          "FILE:@@+cargo_workspaces+cargo_ws_core//Cargo.lock 7ef5164c5134ed6354f2e101571c3159f52788ef5b2899cf8531c7426c8193e9",
-          "FILE:@@+cargo_workspaces+cargo_ws_core//Cargo.toml ac0e136b20060bd6dcf9a2a91294166fe66d01c17ba2d84ea54b9bd55fd2bd6c",
-          "FILE:@@+cargo_workspaces+cargo_ws_core//patched.json eff1b023f7977120e8ee11efbc190746b9b78f392d8cc09f7976d150b1ecbf91",
-          "FILE:@@+cargo_workspaces+cargo_ws_renderer//Cargo.lock 1ab87e853899a5444313ddd1797557dcc94a5741fc907d49c778fb49541e80b2",
-          "FILE:@@+cargo_workspaces+cargo_ws_renderer//Cargo.toml 1be81f215aa79a3bb86d76dec7de019aa5c5cc151b4660ce9b089da009c273bc",
-          "FILE:@@+cargo_workspaces+cargo_ws_renderer//patched.json eff1b023f7977120e8ee11efbc190746b9b78f392d8cc09f7976d150b1ecbf91",
-          "FILE:@@+cargo_workspaces+cargo_ws_scene_host//Cargo.lock db62744d346bc74ca88638eb7485fba7bf37c8a5868057b0bf1640a2ee67a5aa",
-          "FILE:@@+cargo_workspaces+cargo_ws_scene_host//Cargo.toml 3797d03919c671c232e9aac108a1f1c07c6e40ccfae7c1d336ec519911243717",
-          "FILE:@@+cargo_workspaces+cargo_ws_scene_host//patched.json eff1b023f7977120e8ee11efbc190746b9b78f392d8cc09f7976d150b1ecbf91",
+          "FILE:@@+cargo_workspaces+cargo_ws_core//Cargo.lock 839caf2b0c1278b9c24644c07eb027b2d26732faccd6a5ca76b6bc08f7a2a901",
+          "FILE:@@+cargo_workspaces+cargo_ws_core//Cargo.toml 57d78e331fdb0c155d383c32733e4512d14f0d9fda73e21112912e1533aad95d",
+          "FILE:@@+cargo_workspaces+cargo_ws_core//patched.json f83decebfb0be0c08c555711d1bb43444eb39e74a2bda30a4acfdfa721c6ac47",
+          "FILE:@@+cargo_workspaces+cargo_ws_renderer//Cargo.lock 21b29bb1b1582c081cc5fac939f1748dab5e73f8e3efabbe70946558c8606332",
+          "FILE:@@+cargo_workspaces+cargo_ws_renderer//Cargo.toml b992eb51becc4392dc183b55eb8f0fb12b61e7c30641805e0ba399239aefc9e3",
+          "FILE:@@+cargo_workspaces+cargo_ws_renderer//patched.json f83decebfb0be0c08c555711d1bb43444eb39e74a2bda30a4acfdfa721c6ac47",
+          "FILE:@@+cargo_workspaces+cargo_ws_scene_host//Cargo.lock b1cc3f3956a84ae1b6923d179a7b9e15f819f4788cba21d1aa5f868be7e41288",
+          "FILE:@@+cargo_workspaces+cargo_ws_scene_host//Cargo.toml b7709359a6b248127ed9730c40ee6aa25f62b9845b20b500eb0cc9853e6eb3d6",
+          "FILE:@@+cargo_workspaces+cargo_ws_scene_host//patched.json f83decebfb0be0c08c555711d1bb43444eb39e74a2bda30a4acfdfa721c6ac47",
           "FILE:@@+cargo_workspaces+cargo_ws_memprof//Cargo.lock 700ce60a085805e81be18248290fa55c12fd753835006ab68256b8f397261384",
           "FILE:@@+cargo_workspaces+cargo_ws_memprof//Cargo.toml 6982e34060f201166856e8294a4c4a42cd957eb79df82f72f536b5318e6244b8",
           "FILE:@@//packages/kitesurf-cli/Cargo.lock 152fed308b4920eadd2828ba02d0dda6109d0a733cba973a78a25394334fd143",
@@ -1301,6 +1320,12 @@
           "crates__anyrender_svg-0.15.0": {
             "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
             "attributes": {
+              "patch_args": [
+                "-p1"
+              ],
+              "patches": [
+                "@@//scripts:patches/anyrender_svg-0.15.0/0001-Composite-alpha-and-white-luminance-SVG-masks.patch"
+              ],
               "remote_patch_strip": 1,
               "sha256": "39327debd1bdca190d086c107825a5dc4c665be31e99e5c0854345a050d08cad",
               "type": "tar.gz",
@@ -1553,7 +1578,9 @@
                 "@@//scripts:patches/blitz-dom-0.3.0-beta.4/0070-layout-rebuild-inline-backgrounds-when-fragment-pres.patch",
                 "@@//scripts:patches/blitz-dom-0.3.0-beta.4/0071-Resolve-placeholder-style-for-text-controls.patch",
                 "@@//scripts:patches/blitz-dom-0.3.0-beta.4/0072-Stamp-CSS-opacity-and-blend-mode-on-inner-SVG-elemen.patch",
-                "@@//scripts:patches/blitz-dom-0.3.0-beta.4/0073-Rebuild-a-text-control-when-its-placeholder-look-cha.patch"
+                "@@//scripts:patches/blitz-dom-0.3.0-beta.4/0073-Rebuild-a-text-control-when-its-placeholder-look-cha.patch",
+                "@@//scripts:patches/blitz-dom-0.3.0-beta.4/0074-Detect-blocks-inside-inline-shadow-hosts-through-the.patch",
+                "@@//scripts:patches/blitz-dom-0.3.0-beta.4/0075-Resolve-percentage-heights-through-inline-flow-wrapp.patch"
               ],
               "remote_patch_strip": 1,
               "sha256": "a814bfd3ad19e6d8d26f99c75188062baca499564f9abe44250230962427d183",
