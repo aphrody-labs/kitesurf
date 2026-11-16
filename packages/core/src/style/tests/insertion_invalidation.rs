@@ -227,3 +227,47 @@ fn appending_a_sibling_restyles_a_descendant_of_a_has_anchor() {
     append_classed(&dom, p, "i", "b2");
     assert_eq!(color(&dom, b), GREEN);
 }
+
+/// A `:has()` anchored on the parent with a structural argument changes when a child arrives, and
+/// the inserted element carries no id, class or attribute for the invalidator to key on.
+#[test]
+fn inserting_a_child_restyles_a_parent_matching_a_structural_has() {
+    let css = format!("#p{{color:{RED}}} #p:has(> .a:first-child){{color:{GREEN}}}");
+    let dom = styled(&css, "<div id=p><i class=a></i><b>x</b></div>");
+    let p = id(&dom, "#p");
+    let first = id(&dom, "#p > i");
+    assert_eq!(color(&dom, p), GREEN, "precondition: .a is the first child");
+
+    let span = dom.create_element("span");
+    assert!(dom.insert_before_node(p, span, first));
+    dom.resolve_layout();
+
+    assert_eq!(
+        color(&dom, p),
+        RED,
+        "the anchor kept the style of the match it no longer has"
+    );
+}
+
+/// `dir=auto` takes its direction from the descendants' text, which no selector flag covers.
+#[test]
+fn appending_right_to_left_text_flips_a_dir_auto_element() {
+    let dom = styled("", "<div id=p dir=auto></div>");
+    let p = id(&dom, "#p");
+    assert_eq!(
+        dom.computed_style_value(p, "direction").as_deref(),
+        Some("ltr"),
+        "precondition: no content yet"
+    );
+
+    let text =
+        dom.create_text_node("\u{05e9}\u{05dc}\u{05d5}\u{05dd} \u{05e2}\u{05d5}\u{05dc}\u{05dd}");
+    assert!(dom.append_child_node(p, text));
+    dom.resolve_layout();
+
+    assert_eq!(
+        dom.computed_style_value(p, "direction").as_deref(),
+        Some("rtl"),
+        "dir=auto kept the direction it computed before the text arrived"
+    );
+}
