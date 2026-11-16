@@ -441,8 +441,8 @@ export function installGlobals(
   }
   if (!ksInternals.wrapBoaMethod) {
     ksInternals.wrapBoaMethod = function (call, fnHandle, recvHandle) {
-      return function () {
-        return call(fnHandle, recvHandle, Array.prototype.slice.call(arguments));
+      return function (this: unknown) {
+        return call(fnHandle, recvHandle, Array.prototype.slice.call(arguments), this);
       };
     };
   }

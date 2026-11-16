@@ -1951,8 +1951,9 @@ fn trap_get(_this: &BoaValue, args: &[BoaValue], ctx: &mut Context) -> JsResult<
     };
     if let Some(sym) = args.get(1).and_then(|k| k.as_symbol()) {
         let v8sym = boa_symbol_to_v8(&sym, ctx);
+        let recv = inheriting_receiver_v8(args.get(2), handle, ctx);
         let v8 = get_v8(handle);
-        return match with_v8(ctx, || Reflect::get(&v8, v8sym.as_ref())) {
+        return match with_v8(ctx, || reflect_get(&v8, v8sym.as_ref(), recv.as_ref())) {
             Ok(res) => Ok(v8_property_to_boa(res, None, (handle, &target), ctx)),
             Err(e) => getter_threw(e, ctx),
         };
@@ -1968,8 +1969,9 @@ fn trap_get(_this: &BoaValue, args: &[BoaValue], ctx: &mut Context) -> JsResult<
     if let Some(fast) = crate::js::dom_fastpath::try_fast_get(handle, &key, &target, ctx) {
         return Ok(fast);
     }
+    let recv = inheriting_receiver_v8(args.get(2), handle, ctx);
     let v8 = get_v8(handle);
-    match with_v8(ctx, || Reflect::get(&v8, &v8_key(&key))) {
+    match with_v8(ctx, || reflect_get(&v8, &v8_key(&key), recv.as_ref())) {
         Ok(res) => Ok(v8_property_to_boa(
             res,
             Some(key.as_str()),
@@ -1977,6 +1979,45 @@ fn trap_get(_this: &BoaValue, args: &[BoaValue], ctx: &mut Context) -> JsResult<
             ctx,
         )),
         Err(e) => getter_threw(e, ctx),
+    }
+}
+
+// A V8 getter found through a boa object's prototype chain runs with that object as `this`,
+// as OrdinaryGet passes the receiver; a direct read keeps the two-argument form.
+fn inheriting_receiver_v8(
+    recv: Option<&BoaValue>,
+    handle: u64,
+    ctx: &mut Context,
+) -> Option<JsValue> {
+    let recv = recv?.as_object()?;
+    inheriting_receiver(&recv, handle, ctx)
+}
+
+// The V8 receiver for a V8 property of `handle` that `recv` inherits. A boa object inherits it
+// through its boa chain. A bridged V8 object (an instance V8 built for a boa subclass) inherits
+// it through its V8 chain, which a boa `super` lookup skips by starting at the home object.
+fn inheriting_receiver(recv: &JsObject, handle: u64, ctx: &mut Context) -> Option<JsValue> {
+    if receives_through(recv, handle, ctx) {
+        return Some(boa_to_v8(&recv.clone().into(), ctx));
+    }
+    let own = bridged_v8_handle(recv, ctx).filter(|&own| own != handle)?;
+    let holder = get_v8(handle);
+    if !holder.is_object() && !holder.is_function() {
+        return None;
+    }
+    let holder: Object = holder.unchecked_into();
+    let recv = get_v8(own);
+    with_v8(ctx, || holder.is_prototype_of(&recv)).then_some(recv)
+}
+
+fn reflect_get(
+    target: &JsValue,
+    key: &JsValue,
+    recv: Option<&JsValue>,
+) -> Result<JsValue, JsValue> {
+    match recv {
+        Some(recv) => reflect_get_with_receiver(target, key, recv),
+        None => Reflect::get(target, key),
     }
 }
 
@@ -2062,7 +2103,13 @@ fn trap_apply(_this: &BoaValue, args: &[BoaValue], ctx: &mut Context) -> JsResul
         return Ok(BoaValue::undefined());
     };
     let this_v8 = match read_handle(&target, "__ks_t", ctx) {
-        Some(h) => get_v8(h),
+        // Methods stay bound to the object they were read from, keeping their identity; a boa
+        // object that inherited one through it is still the receiver when it is `this`.
+        Some(h) => args
+            .get(1)
+            .and_then(|t| t.as_object())
+            .and_then(|t| inheriting_receiver(&t, h, ctx))
+            .unwrap_or_else(|| get_v8(h)),
         None => match args.get(1) {
             Some(t)
                 if t.as_object()
@@ -2142,11 +2189,7 @@ fn trap_set(_this: &BoaValue, args: &[BoaValue], ctx: &mut Context) -> JsResult<
     // OrdinarySet writes inherited data to the receiver. Preserve V8 super-setters,
     // the global-proxy exception, and foreign Proxy forwarding.
     if let Some(recv) = args.get(3).and_then(|v| v.as_object()) {
-        let is_global = JsObject::equals(&recv, &ctx.global_object());
-        if !is_global
-            && bridged_v8_handle(&recv, ctx) != Some(handle)
-            && inherits_from_bridged(&recv, handle, ctx)
-        {
+        if receives_through(&recv, handle, ctx) {
             return set_on_receiver(handle, args.get(1), value, recv, ctx);
         }
     }
@@ -2160,6 +2203,14 @@ fn trap_set(_this: &BoaValue, args: &[BoaValue], ctx: &mut Context) -> JsResult<
         Ok(ok) => Ok(BoaValue::from(ok)),
         Err(e) => Err(JsError::from_opaque(v8_to_boa(e, ctx))),
     }
+}
+
+// Whether OrdinaryGet/OrdinarySet reached `handle` through `recv`'s own boa prototype chain. A
+// Proxy receiver forwards as before, and boa's global stays out: V8 natives need V8's global.
+fn receives_through(recv: &JsObject, handle: u64, ctx: &mut Context) -> bool {
+    !recv.is::<boa_engine::builtins::proxy::Proxy>()
+        && !JsObject::equals(recv, &ctx.global_object())
+        && inherits_from_bridged(recv, handle, ctx)
 }
 
 fn inherits_from_bridged(recv: &JsObject, handle: u64, ctx: &mut Context) -> bool {
@@ -2678,15 +2729,14 @@ fn tramp_method_body(
     fn_handle: f64,
     recv_handle: f64,
     args_v8: JsValue,
+    this_v8: JsValue,
 ) -> Result<JsValue, JsValue> {
     with_context(|ctx| {
         heal_at_entry(ctx);
         let Some(jsfn) = get_boa(fn_handle as u64).and_then(JsFunction::from_object) else {
             return Ok(JsValue::UNDEFINED);
         };
-        let this = get_boa(recv_handle as u64)
-            .map(|o| o.into())
-            .unwrap_or(BoaValue::undefined());
+        let this = method_receiver(this_v8, recv_handle as u64, ctx);
         let args = unpack_args(&args_v8, ctx);
         match jsfn.call(&this, &args, ctx) {
             Ok(res) => Ok(boa_to_v8(&res, ctx)),
@@ -2702,6 +2752,22 @@ fn tramp_method_body(
     .unwrap_or(Ok(JsValue::UNDEFINED))
 }
 
+// A method trampoline is bound to the object it was read from, which a detached call still
+// uses. A call with a `this` (a wrapper's `original.call(this)` on an instance) runs on it.
+fn method_receiver(this_v8: JsValue, recv_handle: u64, ctx: &mut Context) -> BoaValue {
+    // A sloppy-mode detached call passes the global as `this`.
+    if this_v8.is_undefined() || this_v8 == JsValue::from(js_sys::global()) {
+        return get_boa(recv_handle)
+            .map(Into::into)
+            .unwrap_or_else(BoaValue::undefined);
+    }
+    // Our own V8 wrapper unwraps to its boa original without the Promise probe in v8_to_boa.
+    if let Some(o) = boa_unwrap_handle(&this_v8).and_then(get_boa) {
+        return o.into();
+    }
+    v8_to_boa(this_v8, ctx)
+}
+
 // Build the three shims once; deliberately leaked for the isolate's
 // life (same bounded-singleton class as the proxy shims + FR callback).
 fn tramp_shims() -> (JsValue, JsValue, JsValue) {
@@ -2712,7 +2778,7 @@ fn tramp_shims() -> (JsValue, JsValue, JsValue) {
     type R = Result<JsValue, JsValue>;
     let call = Closure::<dyn Fn(f64, J, J) -> R>::new(tramp_call_body);
     let ctor = Closure::<dyn Fn(f64, J) -> R>::new(tramp_construct_body);
-    let method = Closure::<dyn Fn(f64, f64, J) -> R>::new(tramp_method_body);
+    let method = Closure::<dyn Fn(f64, f64, J, J) -> R>::new(tramp_method_body);
     let t = (
         call.as_ref().clone(),
         ctor.as_ref().clone(),
@@ -2898,7 +2964,12 @@ fn shim_get(target: JsValue, key: JsValue, recv: JsValue) -> JsValue {
             }
             FnKeyOwner::FunctionProto => {}
         }
-        let res = o.get(pk, ctx);
+        let res = if inherited {
+            let receiver = v8_to_boa(recv.clone(), ctx);
+            boa_get_with_receiver(&o, pk, receiver, ctx)
+        } else {
+            o.get(pk, ctx)
+        };
         match res {
             Ok(bv) => match bv.as_object() {
                 Some(fobj) if fobj.is_callable() => {
@@ -2922,6 +2993,36 @@ fn shim_get(target: JsValue, key: JsValue, recv: JsValue) -> JsValue {
         }
     })
     .unwrap_or(JsValue::UNDEFINED)
+}
+
+// [[Get]] with an explicit receiver, so a boa getter inherited by a V8 object runs on that
+// object rather than on the prototype that holds it. Boa exposes this only as Reflect.get.
+fn boa_get_with_receiver(
+    o: &JsObject,
+    key: PropertyKey,
+    receiver: BoaValue,
+    ctx: &mut Context,
+) -> JsResult<BoaValue> {
+    let key: BoaValue = match key {
+        PropertyKey::String(s) => s.into(),
+        PropertyKey::Symbol(s) => s.into(),
+        PropertyKey::Index(i) => BoaValue::from(i.get()),
+    };
+    let reflect_get = ctx
+        .intrinsics()
+        .objects()
+        .reflect()
+        .get(js_string!("get"), ctx)?;
+    let Some(reflect_get) = reflect_get.as_callable() else {
+        return Err(JsNativeError::typ()
+            .with_message("Reflect.get is not callable")
+            .into());
+    };
+    reflect_get.call(
+        &BoaValue::undefined(),
+        &[o.clone().into(), key, receiver],
+        ctx,
+    )
 }
 
 enum FnKeyOwner {

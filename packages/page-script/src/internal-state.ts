@@ -235,6 +235,7 @@ export interface KitesurfInternals {
   // Installed by page-script for the wasm core (core/src/js/internals.rs). Close a small V8
   // function over a boa trampoline shim and its pin handle(s), so a crossing costs no closure.
   wrapBoaFunction?: (call: Function, construct: Function, handle: number) => Function;
+  // The wrapper forwards its own `this` as the trampoline's fourth argument.
   wrapBoaMethod?: (call: Function, fnHandle: number, receiverHandle: number) => Function;
   // A baked module's V8 namespace, so boa reuses it instead of fetching. A JSON request only
   // resolves a record the navigate baked as JSON; anything else falls through to the gate.
