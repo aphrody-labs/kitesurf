@@ -3640,12 +3640,12 @@ fn boa_desc_to_v8(d: &PropertyDescriptor, ctx: &mut Context) -> Object {
 }
 
 fn shim_get_proto(target: JsValue) -> JsValue {
+    // Not dyn_ref: its instanceof walks the target's chain, and a bridged class's chain runs
+    // through its superclasses' proxies, so every level would walk the rest again.
     // V8 owns function-prototype checks so `Function` tests cannot re-enter Boa.
     if target.is_function() {
-        if let Some(obj) = target.dyn_ref::<Object>() {
-            if let Ok(p) = Reflect::get_prototype_of(obj) {
-                return p.into();
-            }
+        if let Ok(p) = Reflect::get_prototype_of(target.unchecked_ref::<Object>()) {
+            return p.into();
         }
     }
     let named = target_handle_get(&target).and_then(|handle| {
@@ -3667,8 +3667,8 @@ fn shim_get_proto(target: JsValue) -> JsValue {
     if let Some(p) = named {
         return p;
     }
-    if let Some(obj) = target.dyn_ref::<Object>() {
-        if let Ok(p) = Reflect::get_prototype_of(obj) {
+    if target.is_object() {
+        if let Ok(p) = Reflect::get_prototype_of(target.unchecked_ref::<Object>()) {
             return p.into();
         }
     }
@@ -3918,21 +3918,46 @@ fn boa_fn_to_v8_proxy(tramp: JsValue, boa_pin: u64, ctx: &mut Context) -> JsValu
         let _ = Reflect::set(&desc, &JsValue::from_str("writable"), &JsValue::FALSE);
         let _ = Reflect::define_property(&target, &JsValue::from_str("prototype"), &desc);
     }
-    if let Some(sup) = get_boa(boa_pin).and_then(|o| boa_fn_v8_super(&o, ctx)) {
-        if let Some(sup) = sup.dyn_ref::<Object>() {
-            let _ = Reflect::set_prototype_of(&target, sup);
+    if let Some(sup) = get_boa(boa_pin).and_then(|o| boa_fn_parent(&o, ctx)) {
+        if sup.is_function() || sup.is_object() {
+            let _ = Reflect::set_prototype_of(&target, sup.unchecked_ref());
         }
     }
     target_handle_set(&target, boa_pin);
     Proxy::new(&target, &shared_fn_handler()).into()
 }
 
-fn boa_fn_v8_super(o: &JsObject, ctx: &mut Context) -> Option<JsValue> {
+// The V8 shell inherits from the immediate superclass, so V8 sees the real class chain
+// (Object.getPrototypeOf(Child) === Parent) and statics inherit level by level.
+fn boa_fn_parent(o: &JsObject, ctx: &mut Context) -> Option<JsValue> {
     let fproto = ctx.intrinsics().constructors().function().prototype();
-    let mut cur = o.prototype().clone();
-    for _ in 0..64 {
+    let parent = o.prototype().clone()?;
+    if JsObject::equals(o, &fproto) || JsObject::equals(&parent, &fproto) {
+        return None;
+    }
+    // A superclass is callable. Async functions and generators inherit from a non-callable
+    // intrinsic (%AsyncFunction.prototype%, ...) that must not become the shell's prototype,
+    // or V8 would lose Function.prototype for them; past it, link only a bridged V8 ancestor.
+    if !parent.is_callable() {
+        return bridged_v8_ancestor(&parent, &fproto, ctx);
+    }
+    // Converting the parent converts its own parent first, so bound the recursion as the
+    // other prototype walks in this file are bounded.
+    let depth = FN_PARENT_DEPTH.with(Cell::get);
+    if depth >= MAX_FN_PARENT_DEPTH {
+        return None;
+    }
+    FN_PARENT_DEPTH.with(|d| d.set(depth + 1));
+    let parent = boa_to_v8(&parent.into(), ctx);
+    FN_PARENT_DEPTH.with(|d| d.set(depth));
+    Some(parent)
+}
+
+fn bridged_v8_ancestor(from: &JsObject, fproto: &JsObject, ctx: &mut Context) -> Option<JsValue> {
+    let mut cur = Some(from.clone());
+    for _ in 0..MAX_FN_PARENT_DEPTH {
         let c = cur?;
-        if JsObject::equals(&c, &fproto) {
+        if JsObject::equals(&c, fproto) {
             return None;
         }
         if let Some(h) = bridged_v8_handle(&c, ctx) {
@@ -3941,6 +3966,12 @@ fn boa_fn_v8_super(o: &JsObject, ctx: &mut Context) -> Option<JsValue> {
         cur = c.prototype().clone();
     }
     None
+}
+
+const MAX_FN_PARENT_DEPTH: u32 = 64;
+
+thread_local! {
+    static FN_PARENT_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
 fn boa_object_to_v8_proxy(obj: JsObject) -> (JsValue, u64) {
