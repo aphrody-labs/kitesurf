@@ -80,6 +80,9 @@ export class DomFrontendNodes {
   }
 
   bindChildren(parentId: number, children: Protocol.DOM.Node[]): void {
+    // A client can only place children under a parent it was sent, and binding them anyway would
+    // mark them sent, so every later path would skip them as already delivered.
+    if (!this.#bound.has(parentId)) return;
     // `DOM.setChildNodes` replaces the parent's previous children on the client.
     this.unbindChildren(parentId);
     this.#childrenSent.add(parentId);

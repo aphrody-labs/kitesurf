@@ -171,3 +171,65 @@ test("reordering a node inside its own parent re-sends its descendants", async (
     await session.detach();
   }
 });
+
+// A child-count change resends a parent's children only to the sessions that hold the parent and
+// were sent its children. A session below the requested depth has neither, so naming it in an
+// event would leave the client holding nodes it cannot place.
+async function settle(page: Parameters<typeof setContent>[0]): Promise<void> {
+  await page.evaluate(() => new Promise((r) => setTimeout(() => r(null), 50)));
+}
+
+test("a change under a parent the client was not sent sends no child events", async ({ page }) => {
+  await setContent(page, HTML);
+  const session = await page.createCDPSession();
+  try {
+    const setChildNodes = record(session, "DOM.setChildNodes");
+    const inserted = record(session, "DOM.childNodeInserted");
+    const removed = record(session, "DOM.childNodeRemoved");
+    // The default depth stops at BODY, so this session was never sent `section`.
+    await session.send("DOM.getDocument");
+    await page.evaluate(() => {
+      const section = document.querySelector("section");
+      if (!section) throw new Error("no section");
+      section.innerHTML = "<i id=x>1</i><i>2</i>";
+    });
+    await settle(page);
+
+    expect(setChildNodes).toHaveLength(0);
+    expect(inserted).toHaveLength(0);
+    expect(removed).toHaveLength(0);
+  } finally {
+    await session.detach();
+  }
+});
+
+test("a change under a parent the client holds resends its children", async ({ page }) => {
+  await setContent(page, HTML);
+  const session = await page.createCDPSession();
+  try {
+    const setChildNodes = record(session, "DOM.setChildNodes");
+    // The whole tree, so this session holds the section and was sent its children.
+    const { root } = (await session.send("DOM.getDocument", { depth: -1 })) as {
+      root: CdpNode;
+    };
+    const body = child(child(root, "HTML"), "BODY");
+    const outer = child(body, "DIV");
+    const section = child(outer, "SECTION");
+    await page.evaluate(() => {
+      const section = document.querySelector("section");
+      if (!section) throw new Error("no section");
+      section.innerHTML = "<i id=y>1</i>";
+    });
+    await settle(page);
+
+    const resent = setChildNodes.filter(
+      (e): e is { parentId: number } =>
+        typeof e === "object" &&
+        e !== null &&
+        (e as { parentId?: unknown }).parentId === section.nodeId,
+    );
+    expect(resent.length).toBeGreaterThan(0);
+  } finally {
+    await session.detach();
+  }
+});

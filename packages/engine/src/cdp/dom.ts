@@ -785,10 +785,10 @@ export function emitMutations(
   if (!mutations || mutations.length === 0) return;
   syncStyleSheetsFromMutations(ctx, target, mutations);
   if (target.domEnabledSessions.size === 0) return;
-  // A changed child count leaves the parent's list stale in the sessions that hold it. Every
-  // enabled session is a holder, so they share one set.
+  // A changed child count leaves the parent's list stale in the sessions that hold it, and only
+  // those have a list to replace: a session that was sent the parent without its children has
+  // nothing to resend, and a session that was never sent the parent cannot place them.
   const parentsNeedingRebind = new Map<number, Set<string>>();
-  const rebindSessions = new Set(Array.from(target.domEnabledSessions, sessionKeyOf));
   const byOwner = iframeFrameIdsByOwner(target);
   for (const m of mutations) {
     if (!m || typeof m !== "object") continue;
@@ -796,7 +796,13 @@ export function emitMutations(
     if (typeof kind !== "string" || kind.length === 0) continue;
     if (kind === "stylesheetResourceLoaded") continue;
     if (m.kind === "childNodeCountUpdated" && typeof m.nodeId === "number" && m.nodeId > 0) {
-      parentsNeedingRebind.set(m.nodeId, rebindSessions);
+      const holders = new Set<string>();
+      for (const sessionId of target.domEnabledSessions) {
+        const key = sessionKeyOf(sessionId);
+        const nodes = frontendNodes(target, key);
+        if (nodes.isBound(m.nodeId) && nodes.childrenSent(m.nodeId)) holders.add(key);
+      }
+      if (holders.size > 0) parentsNeedingRebind.set(m.nodeId, holders);
     }
     for (const sessionId of target.domEnabledSessions) {
       const nodes = frontendNodes(target, sessionKeyOf(sessionId));
@@ -927,7 +933,9 @@ function sendChildNodes(
   parentId: number,
   nodes: Protocol.DOM.Node[],
 ): void {
-  frontendNodes(target, sessionKey).bindChildren(parentId, nodes);
+  const frontend = frontendNodes(target, sessionKey);
+  if (!frontend.isBound(parentId)) return;
+  frontend.bindChildren(parentId, nodes);
   ctx.emit({
     method: "DOM.setChildNodes",
     params: { parentId, nodes },
