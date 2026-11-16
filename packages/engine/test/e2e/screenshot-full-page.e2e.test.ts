@@ -71,15 +71,6 @@ test("captures full content and tall clips without changing the viewport", async
 
   const full = await cdpSession.send("Page.captureScreenshot", { captureBeyondViewport: true });
   expect(pngDimensions(full.data)).toEqual([1280, 15_000]);
-  const memory = await cdpSession.send("Kitesurf.getMemoryStats", {});
-  console.log(
-    "[screenshot-full-page] wasm bytes",
-    JSON.stringify({
-      engine: memory.engine?.wasmBytes,
-      pageScript: memory.total?.pageScriptBytes,
-      renderer: memory.renderer?.wasmBytes,
-    }),
-  );
 
   const viewport = await cdpSession.send("Page.captureScreenshot", {});
   expect(pngDimensions(viewport.data)).toEqual([1280, 720]);

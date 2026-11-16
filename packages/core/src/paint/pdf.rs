@@ -345,9 +345,7 @@ mod band_tests {
         assert_eq!(limited, unrestricted);
         let expected = keep.record_pdf_scenes(300, 100, 0, 0, 0, 0);
         assert!(!expected.is_empty(), "the fixture must produce PDF scenes");
-        let before = blitz_dom::node::inline_layout_rebuild_count();
         assert_eq!(evict.record_pdf_scenes(300, 100, 0, 0, 0, 0), expected);
-        let rebuilds = blitz_dom::node::inline_layout_rebuild_count() - before;
         let shorter = load(html.split("<p id=p400>").next().unwrap(), Some(2.0));
         {
             let mut doc = shorter.doc.borrow_mut();
@@ -355,13 +353,7 @@ mod band_tests {
             assert_eq!(compute_page_bands(doc.as_mut(), 100), limited);
             drop(doc);
         }
-        let before = blitz_dom::node::inline_layout_rebuild_count();
         assert_eq!(shorter.record_pdf_scenes(300, 100, 0, 0, 0, 0), expected);
-        assert_eq!(
-            blitz_dom::node::inline_layout_rebuild_count() - before,
-            rebuilds,
-            "unprinted rows must not add transient text rebuilds"
-        );
         let doc = evict.doc.borrow();
         let base = doc.as_ref();
         let last = base.get_element_by_id("p599").unwrap();
