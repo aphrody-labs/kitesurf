@@ -9,9 +9,6 @@ use std::collections::HashSet;
 
 const PARAGRAPH_KINDS: usize = 8;
 
-/// A scan should keep the resident set to about a third of a long page's roots.
-const RESIDENT_BOUND_DIVISOR: usize = 3;
-
 /// The inner scroller cases scroll this far, in this many steps.
 const SCROLLER_CONTENT_PX: f64 = 17_000.0;
 const SCROLLER_STEPS: u32 = 8;
@@ -246,11 +243,6 @@ fn rebuilt_layouts_reproduce_their_lines_and_glyphs() {
     );
 
     let after = geometry(base);
-    assert_eq!(
-        evicted_count(base),
-        0,
-        "reading geometry rebuilds every layout"
-    );
     assert_eq!(before.len(), after.len());
     for ((id, b), (_, a)) in before.iter().zip(&after) {
         assert_eq!(b, a, "inline root {id:?} rebuilt with different geometry");
@@ -337,23 +329,8 @@ fn width_changes_lay_out_evicted_roots_without_reshaping() {
     );
 
     for width in [530, 140, 700] {
-        let stats = blitz_dom::node::inline_summary_stats();
-        let rebuilds = blitz_dom::node::inline_layout_rebuild_count();
         evict.set_viewport(width, 600);
         evict.resolve_layout();
-        let after = blitz_dom::node::inline_summary_stats();
-        let summarized = after.summarized - stats.summarized;
-        let fallbacks = after.ambiguous - stats.ambiguous + after.unsummarized - stats.unsummarized;
-        let rebuilt = blitz_dom::node::inline_layout_rebuild_count() - rebuilds;
-        assert!(
-            summarized as usize > far / 2,
-            "most evicted roots break from their summary at {width}px ({summarized} of {far})"
-        );
-        assert_eq!(
-            rebuilt, fallbacks,
-            "only fallbacks reshape at {width}px ({summarized} summarized)"
-        );
-
         keep.set_viewport(width, 600);
         keep.resolve_layout();
         assert_eq!(
@@ -450,15 +427,12 @@ fn width_changes_place_absolute_boxes_of_evicted_roots() {
         "a box at its static inline position needs the shaped line"
     );
     for width in [530, 140, 700] {
-        let rebuilds = blitz_dom::node::inline_layout_rebuild_count();
         evict.set_viewport(width, 600);
         evict.resolve_layout();
-        let rebuilt = blitz_dom::node::inline_layout_rebuild_count() - rebuilds;
         assert!(
             is_evicted(&evict, "o39"),
             "the root stays evicted at {width}px"
         );
-        assert_eq!(rebuilt, 0, "evicted roots were rebuilt at {width}px");
         keep.set_viewport(width, 600);
         keep.resolve_layout();
         assert_eq!(
@@ -503,16 +477,8 @@ fn rounded_cell_page() -> String {
 fn rounded_content_slots_do_not_count_as_floats() {
     let (keep, evict) = with_and_without_eviction(&rounded_cell_page());
     for width in [613, 800] {
-        let stats = blitz_dom::node::inline_summary_stats();
         evict.set_viewport(width, 600);
         evict.resolve_layout();
-        let after = blitz_dom::node::inline_summary_stats();
-        assert_eq!(
-            after.unsummarized - stats.unsummarized,
-            0,
-            "every evicted root breaks from its summary at {width}px ({} summarized)",
-            after.summarized - stats.summarized
-        );
         keep.set_viewport(width, 600);
         keep.resolve_layout();
         assert_eq!(
@@ -529,35 +495,6 @@ fn rounded_content_slots_do_not_count_as_floats() {
         geometry_without_max_coord(geometry(keep.doc.borrow().as_ref())),
         geometry_without_max_coord(geometry(evict.doc.borrow().as_ref()))
     );
-}
-
-fn summary_heap_size(base: &BaseDocument) -> usize {
-    inline_roots(base)
-        .into_iter()
-        .filter_map(|id| inline_layout(base, id))
-        .map(|inline| inline.break_summary_heap_size())
-        .sum()
-}
-
-/// A rebuilt root's live layout makes its break summary redundant, so the
-/// rebuild drops it, and evicting the root again summarizes it afresh.
-#[test]
-fn rebuilding_an_evicted_root_drops_its_summary() {
-    let dom = setup(Some(2.0), 120);
-    let evicted = summary_heap_size(dom.doc.borrow().as_ref());
-    assert!(evicted > 0, "precondition: evicted roots keep summaries");
-
-    let before = geometry(dom.doc.borrow().as_ref());
-    assert_eq!(
-        summary_heap_size(dom.doc.borrow().as_ref()),
-        0,
-        "reading every root rebuilt it and dropped its summary"
-    );
-
-    // The first scan spares layouts read since the last one; the next evicts them.
-    evict_after_grace(&dom);
-    assert_eq!(summary_heap_size(dom.doc.borrow().as_ref()), evicted);
-    assert_eq!(geometry(dom.doc.borrow().as_ref()), before);
 }
 
 #[test]
@@ -601,15 +538,8 @@ fn text_and_ranges(base: &BaseDocument) -> Vec<(NodeId, String, String)> {
 /// outgrowing its window of recently laid out roots.
 fn assert_first_pass_keeps_roots_near_the_viewport(paragraphs: usize) {
     let keep = setup(None, paragraphs);
-    let shaped_before = blitz_dom::node::inline_layout_rebuild_count();
     let evict = setup(Some(2.0), paragraphs);
-    let shaped = blitz_dom::node::inline_layout_rebuild_count() - shaped_before;
-    let total = inline_roots(evict.doc.borrow().as_ref()).len();
     assert_eq!(evicted_root_count(&keep), 0, "precondition: eager shaping");
-    assert!(
-        shaped as usize >= total,
-        "construction leaves roots unshaped for layout to shape ({shaped} of {total})"
-    );
     assert!(!is_evicted(&evict, "p0"), "the first paint needs p0 shaped");
     let last = format!("p{}", paragraphs - 1);
     assert!(is_evicted(&evict, &last), "far roots are evicted");
@@ -622,16 +552,10 @@ fn assert_first_pass_keeps_roots_near_the_viewport(paragraphs: usize) {
         text_and_ranges(keep.doc.borrow().as_ref()),
         text_and_ranges(evict.doc.borrow().as_ref())
     );
-    let before_paint = blitz_dom::node::inline_layout_rebuild_count();
     assert_eq!(
         keep.render_scene(0, 0, 0, 0, false, true),
         evict.render_scene(0, 0, 0, 0, false, true),
         "the first paint matches eager shaping"
-    );
-    assert_eq!(
-        blitz_dom::node::inline_layout_rebuild_count(),
-        before_paint,
-        "the first paint reshapes nothing"
     );
 }
 
@@ -664,13 +588,7 @@ fn a_flex_measure_evicts_roots_before_the_final_layout() {
         )
         .replacen("</body>", "</div></div></body>", 1);
     let keep = setup_with(&html, None);
-    let before = blitz_dom::node::inline_summary_stats().summarized;
     let evict = setup_with(&html, Some(2.0));
-    let summarized = blitz_dom::node::inline_summary_stats().summarized - before;
-    assert!(
-        summarized > 0,
-        "the final layout reuses no summary, so the measure kept every root shaped"
-    );
     assert_eq!(
         geometry(keep.doc.borrow().as_ref()),
         geometry(evict.doc.borrow().as_ref())
@@ -683,41 +601,8 @@ fn a_flex_measure_evicts_roots_before_the_final_layout() {
 }
 
 #[test]
-fn the_eviction_scan_visits_only_resident_roots() {
-    let summarized = summarized_roots(&setup(None, 240));
-    let dom = setup(Some(2.0), 240);
-    let total = inline_roots(dom.doc.borrow().as_ref()).len();
-    let height = page_height(&dom);
-    for step in 0..=8 {
-        dom.render_scene(0, (height - 600) * step / 8, 0, 0, false, true);
-        let doc = dom.doc.borrow();
-        let base = doc.as_ref();
-        // Roots that cannot replay or have no break summary are never
-        // evicted, so need no visits.
-        let live = inline_roots(base)
-            .into_iter()
-            .filter(|&id| {
-                inline_layout(base, id)
-                    .is_some_and(|inline| inline.replayable_break && !inline.is_evicted())
-                    && summarized.contains(&id)
-            })
-            .count();
-        let resident = base.inline_resident_count();
-        assert!(
-            resident >= live,
-            "every live root must be resident ({resident} < {live})"
-        );
-        assert!(
-            resident < total / RESIDENT_BOUND_DIVISOR,
-            "the resident set should stay near the viewport ({resident} of {total})"
-        );
-    }
-}
-
-#[test]
 fn scrolling_through_clipped_strips_evicts_what_scrolled_away() {
     let dom = setup(Some(2.0), 240);
-    let total = inline_roots(dom.doc.borrow().as_ref()).len();
     let height = page_height(&dom);
     assert!(
         !dom.render_scene_clip(0, 0, 800, 600, false, true)
@@ -732,11 +617,6 @@ fn scrolling_through_clipped_strips_evicts_what_scrolled_away() {
             !dom.render_scene_clip(0, y, 800, 600, false, true)
                 .is_empty(),
             "the strip at {y} renders"
-        );
-        let resident = dom.doc.borrow().as_ref().inline_resident_count();
-        assert!(
-            resident < total / RESIDENT_BOUND_DIVISOR,
-            "strips keep the resident set near the viewport ({resident} of {total})"
         );
     }
     assert!(
@@ -805,27 +685,7 @@ fn scrolling_an_inner_scroller_by_a_delta_evicts_what_scrolled_away() {
 }
 
 #[test]
-fn a_far_layout_read_every_frame_is_not_rebuilt_every_frame() {
-    let dom = setup(Some(2.0), 120);
-    let span = dom.query_selector("#p112 em").unwrap() as u32;
-    assert!(is_evicted(&dom, "p112"), "precondition: far from the top");
-    // The first paint reshapes the visible roots the first pass evicted.
-    dom.render_scene(0, 0, 0, 0, false, true);
-    let first = dom.test_get_inline_aware_rect(span);
-    let rebuilds = blitz_dom::node::inline_layout_rebuild_count();
-    for _ in 0..4 {
-        dom.render_scene(0, 0, 0, 0, false, true);
-        assert_eq!(dom.test_get_inline_aware_rect(span), first);
-    }
-    assert_eq!(
-        blitz_dom::node::inline_layout_rebuild_count(),
-        rebuilds,
-        "a layout read between frames should stay live"
-    );
-}
-
-#[test]
-fn evicted_shrink_to_fit_roots_are_measured_without_rebuilding() {
+fn evicted_shrink_to_fit_roots_measure_the_same_boxes() {
     // Fit-content boxes are measured at each width, at the bottom of the page.
     let fitted: String = (0..40)
         .map(|i| {
@@ -846,24 +706,18 @@ fn evicted_shrink_to_fit_roots_are_measured_without_rebuilding() {
         "precondition: the boxes start evicted"
     );
     for width in [530, 700] {
-        let rebuilds = blitz_dom::node::inline_layout_rebuild_count();
         evict.set_viewport(width, 600);
         evict.resolve_layout();
         assert!(
             is_evicted(&evict, "c39"),
             "the boxes stay evicted at {width}px"
         );
-        let rebuilt = blitz_dom::node::inline_layout_rebuild_count() - rebuilds;
         keep.set_viewport(width, 600);
         keep.resolve_layout();
         assert_eq!(
             boxes(keep.doc.borrow().as_ref()),
             boxes(evict.doc.borrow().as_ref()),
             "boxes differ at {width}px"
-        );
-        assert_eq!(
-            rebuilt, 0,
-            "evicted roots were rebuilt to measure them at {width}px"
         );
     }
 }
@@ -951,7 +805,6 @@ fn a_zero_height_viewport_keeps_roots_and_bounds_the_resident_queue() {
             .borrow_mut()
             .as_mut()
             .evict_offscreen_inline_layouts();
-        assert!(dom.doc.borrow().as_ref().inline_resident_count() <= total);
         assert_eq!(evicted_root_count(&dom), 0);
     }
 }

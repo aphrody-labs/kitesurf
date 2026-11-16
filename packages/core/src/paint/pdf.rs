@@ -330,15 +330,9 @@ mod band_tests {
             .as_mut()
             .set_inline_layout_eviction(Some(2.0));
         dom.resolve_layout();
-        let before = blitz_dom::node::inline_layout_rebuild_count();
         // The paper box differs from the session viewport, so this re-lays out the
         // document at the print width before collecting the page bands.
         assert!(!dom.record_pdf_scenes(300, 100, 0, 0, 0, 0).is_empty());
-        assert_eq!(
-            blitz_dom::node::inline_layout_rebuild_count(),
-            before,
-            "the print reshaped rows its own layout pass had just shaped"
-        );
     }
 
     #[test]

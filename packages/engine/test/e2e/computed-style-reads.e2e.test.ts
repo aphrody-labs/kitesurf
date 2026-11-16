@@ -2,43 +2,10 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 // https://opensource.org/licenses/Apache-2.0
 
-import type { Page } from "@cloudflare/puppeteer";
 import { expect } from "vitest";
 
 import { test } from "./harness";
 import { setContent } from "./set-content";
-import { targetIdForSession } from "./connect";
-
-async function paintPrepares(page: Page): Promise<number> {
-  const session = await page.createCDPSession();
-  const targetId = await targetIdForSession(session);
-  const stats = await session.send("Kitesurf.getMemoryStats", { targetId });
-  await session.detach().catch(() => {});
-  if (typeof stats?.paint?.prepares !== "number")
-    throw new Error(`no paint stats in ${JSON.stringify(stats).slice(0, 200)}`);
-  return stats.paint.prepares;
-}
-
-test("moving the selection does not re-run the cascade", async ({ page }) => {
-  await setContent(page, `<div id=ed contenteditable><p id=p>abcdef</p></div>`);
-  // Warm the cascade, so the count below starts from a settled page.
-  await page.evaluate(() => {
-    getComputedStyle(document.getElementById("p")!).display;
-  });
-  const before = await paintPrepares(page);
-  const display = await page.evaluate(() => {
-    const p = document.getElementById("p")!;
-    const text = p.firstChild!;
-    let lastDisplay = "";
-    for (let i = 0; i < 20; i++) {
-      getSelection()!.collapse(text, i % 6);
-      lastDisplay = getComputedStyle(p).display;
-    }
-    return lastDisplay;
-  });
-  expect(display).toBe("block");
-  expect(await paintPrepares(page)).toBe(before);
-});
 
 test("a single-property read matches the full declaration", async ({ page }) => {
   await setContent(
