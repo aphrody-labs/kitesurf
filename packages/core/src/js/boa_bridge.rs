@@ -2985,7 +2985,7 @@ fn shim_has(target: JsValue, key: JsValue) -> JsValue {
             return JsValue::from_bool(false);
         };
         let pk = v8_key_to_boa(&key, ctx);
-        if matches!(o.get(pk.clone(), ctx), Ok(ref v) if !v.is_undefined()) {
+        if o.has_property(pk.clone(), ctx).unwrap_or(false) {
             return JsValue::TRUE;
         }
         let shell = target.unchecked_ref::<Object>();
