@@ -39034,7 +39034,7 @@
     "reason": null
   },
   "/css/CSS2/normal-flow/block-in-inline-percents-001.xht": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/css/css-cascade/layer-stylesheet-multi-adoption.html": {
@@ -39054,19 +39054,19 @@
     "reason": null
   },
   "/css/css-masking/mask-svg-content/mask-negative-scale.svg": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/css/css-masking/mask-svg-content/mask-on-thin-stroked-path-default.svg": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/css/css-masking/mask-svg-content/mask-text-001.svg": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/css/css-masking/mask-svg-content/mask-type-001.svg": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/css/css-masking/mask-svg-content/mask-type-002.svg": {
@@ -39086,7 +39086,7 @@
     "reason": null
   },
   "/css/css-masking/mask-svg-content/mask-with-rotation.svg": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/css/css-shadow/reslot-text-inheritance.html": {
@@ -39094,7 +39094,7 @@
     "reason": null
   },
   "/css/css-shadow/shadow-host-style-sharing.html": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/css/css-shadow/shadow-host-with-before-after.html": {

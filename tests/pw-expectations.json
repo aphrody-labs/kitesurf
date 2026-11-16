@@ -1803,10 +1803,6 @@
     "expected": "SKIP",
     "reason": "no kitesurf screenshot baseline"
   },
-  "page-screenshot.spec.ts::page screenshot › mask option › should remove mask after screenshot": {
-    "expected": "FAIL",
-    "reason": "Error: page.screenshot: Error: TypeError: cannot read properties of undefined (reading 'push') (unknown at :1:52)"
-  },
   "page-screenshot.spec.ts::page screenshot › mask option › should work": {
     "expected": "FAIL",
     "reason": "Error: page.screenshot: Error: TypeError: cannot read properties of undefined (reading 'push') (unknown at :1:52)"
