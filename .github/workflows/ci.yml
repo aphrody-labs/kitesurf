@@ -31,7 +31,12 @@ jobs:
         uses: ./.github/actions/setup
         with:
           bazel-cache: "true"
-          bazelflare: "true"
+          # The triage bot can push triagebot/** and dependabot/** branches with agent-written code
+          # driven by issue text, so those always build on the runner, like a fork's pull request
+          # (scripts/triage/README.md, "Security").
+          bazelflare: >-
+            ${{ !(startsWith(github.head_ref || github.ref_name, 'triagebot/') ||
+                  startsWith(github.head_ref || github.ref_name, 'dependabot/')) && 'true' || 'false' }}
       - run: pnpm install --frozen-lockfile
       - run: bazel test --keep_going --test_output=errors //:check //:rust_lint //packages/core:host_tests //packages/engine:vitest
       - run: pnpm run build
@@ -41,7 +46,8 @@ jobs:
       - run: pnpm run lint:js
       - run: bazel run //scripts:workspace_checks
       # Each spec boots an engine on a bazelflare executor, whose image holds the pinned Playwright
-      # checkout. A fork's pull request has no bazelflare, so main runs the lane once it merges.
+      # checkout. Pull requests from forks, triagebot/** and dependabot/** have no bazelflare, so
+      # main runs the lane once they merge.
       - if: steps.setup.outputs.bazelflare == 'true'
         run: bazel test --keep_going --test_output=errors //tests/pw:specs //tests/pw:expectations_test
       - if: always()

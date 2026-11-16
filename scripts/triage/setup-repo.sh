@@ -85,18 +85,19 @@ for file in "$rulesets_dir"/*.json; do
 done
 
 missing=0
-# The bot may only push triagebot/** branches; a maintainer must still review
+# The bot may only push triagebot/** and dependabot/** branches; a maintainer must still review
 # and merge its pull requests. The default-branch ruleset belongs to the
 # maintainers, so check it rather than create it.
 echo "== default branch protection"
 default_branch="$(gh api "repos/$repo" --jq .default_branch)"
 rules="$(gh api --paginate "repos/$repo/rules/branches/$default_branch" | jq -s 'add // []')"
 # The app can submit reviews, so a plain approval could be its own. A
-# code-owner review from a human team cannot.
-if jq -e 'any(.[]; .type == "pull_request" and .parameters.required_approving_review_count >= 1 and .parameters.require_code_owner_review)' <<<"$rules" >/dev/null; then
-  echo "  ok: $default_branch needs an approving code-owner review"
+# code-owner review from a human team cannot. Approval of the last push stops
+# the bot pushing again after a maintainer approved.
+if jq -e 'any(.[]; .type == "pull_request" and .parameters.required_approving_review_count >= 1 and .parameters.require_code_owner_review and .parameters.require_last_push_approval)' <<<"$rules" >/dev/null; then
+  echo "  ok: $default_branch needs an approving code-owner review of the last push"
 else
-  echo "  MISSING: an active ruleset on $default_branch that needs an approving code-owner review"
+  echo "  MISSING: an active ruleset on $default_branch that needs an approving code-owner review of the last push"
   missing=1
 fi
 if gh api "repos/$repo/codeowners/errors" --silent 2>/dev/null; then

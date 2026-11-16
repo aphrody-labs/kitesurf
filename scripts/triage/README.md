@@ -67,6 +67,8 @@ Create an app named `kitesurf-bot` in the organization:
 
 - Repository permissions: **Contents** read and write, **Issues** read and
   write, **Pull requests** read and write, **Metadata** read. Nothing else.
+  In particular no **Workflows** permission: it is the only thing that
+  stops the bot editing `.github/workflows/`, `ci.yml` included.
 - No webhook. No user authorization.
 - Install it on this repository only.
 
@@ -119,14 +121,20 @@ missing. A second run resets the two rulesets to the JSON files.
   the write, maintain or admin role can create, push or delete branches
   other than `triagebot/**` and `dependabot/**`. The app has none of these
   roles, so it can only touch those branches. Dependabot needs the second
-  pattern; a bad push there still needs a reviewed merge.
+  pattern, so the bot could also push to a `dependabot/**` branch, under any
+  commit author it likes. If a Dependabot pull request has a commit that
+  Dependabot didn't push, comment `@dependabot recreate` and review the new
+  head. `main` requires approval of the last push, so a push after your
+  approval needs a new one.
+  (We could not exempt Dependabot alone: GitHub refused a ruleset bypass for
+  the Dependabot app in a test.)
 - **triage bot: no tags** (created). Only users with the write, maintain or
   admin role can create, move or delete tags. `release.yml` publishes a
   release for every `v*` tag, so a bot that could tag could ship a release.
 - **Protection on `main`** (checked, not created). The maintainers own the
   `main` ruleset. `--enable` refuses until an active ruleset on `main`
-  needs an approving **code-owner** review, requires the `ci` and
-  `sign-off` checks, and lets no app bypass it, and until a `CODEOWNERS`
+  needs an approving **code-owner** review and approval of the last push,
+  requires the `ci` and `sign-off` checks, and lets no app bypass it, and until a `CODEOWNERS`
   file exists. The app can submit reviews, so a plain approval could be its
   own; a code-owner review cannot, as long as `CODEOWNERS` names only
   people or a team. This is what stops the bot merging its own work, or
@@ -182,6 +190,10 @@ shell commands on the runner. The setup limits what a hostile issue can do:
 - Comments start a run only from the reporter or a maintainer.
 - The job saves no cache and skips the pnpm cache, so a run cannot poison
   the caches that `main`'s CI restores. It never builds on bazelflare.
+- `ci.yml` always builds `triagebot/**` and `dependabot/**` pull requests on
+  the runner, like a fork's. That includes every Dependabot pull request,
+  since a branch name can't tell Dependabot's commits from the bot's. The
+  Playwright lane never runs on them; `main` runs it after they merge.
 - The model key works only for Workers AI, on an account that runs nothing
   else.
 - The job's own `GITHUB_TOKEN` has `contents: read` and `issues: read`.
@@ -190,7 +202,13 @@ What is **not** covered: the action process holds the write token and the
 model key in its own environment, and the agent's shell runs as the same
 user. A determined prompt injection could read them from the parent
 process, for example through `/proc/<pid>/environ`. Chrome also runs with
-`--no-sandbox` on attacker-written markup. The limits above cap the damage
+`--no-sandbox` on attacker-written markup. And `ci.yml` still gives a bot
+pull request's job `id-token: write`, and any code the pull request runs
+(a `.bazelrc` or `.github/actions/setup` edit, a package script, a test) can
+use it to reach bazelflare's untrusted instance, whose executors trust the
+actions they run. Closing that needs bot pull
+requests in a CI job without `id-token: write`; settle it in the security
+review before you switch the bot on. The limits above cap the damage
 at one hour of pushes to `triagebot/**` and `dependabot/**` branches, issue and pull request
 comments, pull request reviews that do not count, and model spend. Do the step 5 check before you switch the bot
 on, and again after you bump the action.

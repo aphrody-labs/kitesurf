@@ -134,9 +134,12 @@ Rust changes, also run `pnpm run test:rust` and `pnpm run lint:rust` (the Rust
 gates as Bazel tests). CI runs
 the build, the checks, the Rust host tests, the vitest suite and the Playwright
 lane. It does not run the e2e or WPT lanes, so run the ones your change touches.
-CI builds on bazelflare, except for a pull request from a fork: GitHub gives its
-jobs no token to authenticate with, so they build on the runner, which takes
-longer, and skip the Playwright lane, which main runs once the change merges.
+CI builds on bazelflare, except for pull requests from a fork and from
+`triagebot/**` or `dependabot/**` branches. GitHub gives a fork's jobs no token
+to authenticate with, and the triage bot can push the other two
+(`scripts/triage/README.md`, "Security"). These build on the runner, which
+takes longer, and skip the Playwright lane, which main runs once the change
+merges.
 
 ## Commits
 

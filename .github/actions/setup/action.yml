@@ -16,7 +16,10 @@ inputs:
     required: false
     default: "false"
   save-cache:
-    description: Use the pnpm cache and let the rust-cache save on main. Set "false" in jobs that run untrusted input.
+    description: >-
+      Restore and save the pnpm cache, and let the rust-cache save on main. "false" skips the pnpm
+      cache and every save here; Bazel's cache is saved by the calling job. Use "false" in jobs that
+      run untrusted input.
     required: false
     default: "true"
 outputs:
