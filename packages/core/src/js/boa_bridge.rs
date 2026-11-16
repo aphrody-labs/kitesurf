@@ -403,6 +403,14 @@ fn fr_register(wrapper: &JsValue, boa_pin: u64, wrapper_slot: Option<u64>) {
     });
 }
 
+// Release a boa_v8_store slot when its V8 value dies, for a value with no boa pin of its own.
+fn fr_register_slot(value: &JsValue, slot: u64) {
+    let _ = with_weak_rt(|rt| {
+        let held = Array::of2(&JsValue::from_f64(-1.0), &JsValue::from_f64(slot as f64));
+        let _ = rt.register.call2(&rt.registry, value, &held);
+    });
+}
+
 // Runs as its own V8 job, never inside a synchronous bridge call, so
 // the slab borrows here can't collide with an in-flight crossing.
 fn finalize_held(held: JsValue) {
@@ -1506,6 +1514,11 @@ fn boa_v8_lookup(o: &JsObject, ctx: &mut Context) -> Option<JsValue> {
 fn boa_v8_store(o: &JsObject, v: &JsValue, _ctx: &mut Context) -> u64 {
     let stored = make_weak(v).unwrap_or_else(|| v.clone());
     let idx = boa_v8_push(stored);
+    boa_v8_stamp(o, idx);
+    idx
+}
+
+fn boa_v8_stamp(o: &JsObject, idx: u64) {
     let desc = PropertyDescriptor::builder()
         .value(idx as f64)
         .writable(false)
@@ -1513,7 +1526,6 @@ fn boa_v8_store(o: &JsObject, v: &JsValue, _ctx: &mut Context) -> u64 {
         .configurable(true)
         .build();
     o.insert_property(stamp_pk(), desc);
-    idx
 }
 
 fn v8_boa_cache_get(v: &JsValue) -> Option<u64> {
@@ -1836,8 +1848,40 @@ fn v8_object_to_boa(v: JsValue, ctx: &mut Context) -> BoaValue {
 // Wrap a V8 Promise as a boa promise. Enqueues a NativeAsyncJob that awaits
 // the V8 promise via JsFuture (polled by WasmJobQueue on V8's loop);
 // on settle it resolves/rejects the boa promise with the marshalled value.
+thread_local! {
+    // Native promise -> its identity-table slot, so a promise read from Boa again and again
+    // (`await document.fonts.ready` in a loop) shares one slot instead of adding one per read.
+    static NATIVE_PROMISE_SLOTS: RefCell<Option<js_sys::WeakMap>> = const { RefCell::new(None) };
+}
+
+fn stamp_native_promise(object: &JsObject, native: &JsValue, ctx: &mut Context) {
+    let slots = NATIVE_PROMISE_SLOTS.with(|c| {
+        c.borrow_mut()
+            .get_or_insert_with(js_sys::WeakMap::new)
+            .clone()
+    });
+    let key = native.unchecked_ref::<Object>();
+    // The slot is released only when the native dies, which also drops its entry here, so a
+    // hit is live; the identity check guards against a slot reused after an early release.
+    if let Some(slot) = slots.get(key).as_f64().map(|n| n as u64) {
+        if boa_v8_get(slot).is_some_and(|v| Object::is(&v, native)) {
+            boa_v8_stamp(object, slot);
+            return;
+        }
+    }
+    let slot = boa_v8_store(object, native, ctx);
+    fr_register_slot(native, slot);
+    slots.set(key, &JsValue::from_f64(slot as f64));
+}
+
 fn bridge_v8_promise(p: Promise, ctx: &mut Context) -> BoaValue {
     let (promise, ResolvingFunctions { resolve, reject }) = JsPromise::new_pending(ctx);
+    // Passing the boa promise back to V8 must return the original, which may carry properties
+    // its creator attached (a module loader's dependency data). The identity table holds it
+    // weakly, as it holds every boa object's V8 counterpart.
+    let native: JsValue = p.clone().into();
+    let object: JsObject = promise.clone().into();
+    stamp_native_promise(&object, &native, ctx);
     // The await is the async job; settling is a promise job, so the boa reaction
     // runs in a drain batch under the context lock like every other reaction.
     let job = NativeAsyncJob::new(async move |ctx: &std::cell::RefCell<&mut Context>| {
