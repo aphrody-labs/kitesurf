@@ -37,7 +37,10 @@ function loadProducer() {
       Error,
       setTimeout,
       clearTimeout,
-      require: () => ({ nativeSetTimeout: setTimeout, nativeClearTimeout: clearTimeout }),
+      require: (name) =>
+        name.endsWith("native-stream.ts")
+          ? { NativeReadableStream: ReadableStream }
+          : { nativeSetTimeout: setTimeout, nativeClearTimeout: clearTimeout },
     }),
   );
   return exports;

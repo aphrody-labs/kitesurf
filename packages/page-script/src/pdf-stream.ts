@@ -3,6 +3,7 @@
 // https://opensource.org/licenses/Apache-2.0
 
 import { nativeClearTimeout, nativeSetTimeout } from "./native-scheduling.ts";
+import { NativeReadableStream } from "./native-stream.ts";
 
 interface PdfPageSource {
   readonly pageCount: number;
@@ -105,7 +106,7 @@ export function pdfScenePages(
     writeStreamError(cleanupError);
   };
 
-  return new ReadableStream({
+  return new NativeReadableStream({
     type: "bytes",
     start(stream) {
       controller = stream;

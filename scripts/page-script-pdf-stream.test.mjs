@@ -29,7 +29,10 @@ function loadPdfScenePages(schedule = setTimeout, clear = clearTimeout) {
       Error,
       setTimeout: schedule,
       clearTimeout: clear,
-      require: () => ({ nativeSetTimeout: schedule, nativeClearTimeout: clear }),
+      require: (name) =>
+        name.endsWith("native-stream.ts")
+          ? { NativeReadableStream: ReadableStream }
+          : { nativeSetTimeout: schedule, nativeClearTimeout: clear },
     }),
   );
   return exports.pdfScenePages;
