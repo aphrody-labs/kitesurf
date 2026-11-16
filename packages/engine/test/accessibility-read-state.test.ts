@@ -97,6 +97,92 @@ describe("accessibility read state", () => {
     expect(built?.readState?.stamps.accessibility).toEqual(stamp(1, 2));
   });
 
+  // `call` throws where `tryCall` answers null. An embedder that reads null as "no document yet"
+  // and retries must keep working when a navigation starts mid-read.
+  it("answers null when the pinned generation retires during the read", async () => {
+    const retired = async () => {
+      throw new Error("PageScript generation retired");
+    };
+    const ps = {
+      call: { getDocument: retired, accessibilityTree: retired },
+      tryCall: {
+        getDocument: async () => null,
+        notRenderedNodeIds: async () => null,
+        formStateSnapshot: async () => null,
+      },
+    };
+
+    await expect(
+      buildTree(ps, pageTarget(), { includeReadState: true, fallback: false }),
+    ).resolves.toBeNull();
+  });
+
+  // A navigation that replaces the PageScript mid-read rejects with the RPC's own error, not the
+  // session's "retired" message, so the session's liveness is what decides.
+  it("answers null when the PageScript is replaced during the document read", async () => {
+    const ps = {
+      call: {
+        getDocument: async () => {
+          throw new Error("PageScript session is dead");
+        },
+        accessibilityTree: async () => null as never,
+      },
+      tryCall: {
+        getDocument: async () => null,
+        notRenderedNodeIds: async () => null,
+        formStateSnapshot: async () => null,
+      },
+      isLive: () => false,
+    };
+
+    await expect(
+      buildTree(ps, pageTarget(), { includeReadState: true, fallback: false }),
+    ).resolves.toBeNull();
+  });
+
+  // The navigation can land after the document read; the tree read has to answer the same way.
+  it("answers null when the navigation lands before the accessibility read", async () => {
+    let live = true;
+    const ps = {
+      call: {
+        getDocument: async () => ({ root: ROOT, readStamp: stamp(1, 1) }),
+        accessibilityTree: async () => {
+          live = false;
+          throw new Error("PageScript generation retired");
+        },
+      },
+      tryCall: {
+        getDocument: async () => null,
+        notRenderedNodeIds: async () => null,
+        formStateSnapshot: async () => null,
+      },
+      isLive: () => live,
+    };
+
+    await expect(
+      buildTree(ps, pageTarget(), { includeReadState: true, fallback: false }),
+    ).resolves.toBeNull();
+  });
+
+  // A read budget error is a real failure, not a generation that went away.
+  it("still throws when the document read reports a budget error", async () => {
+    const ps = {
+      call: {
+        getDocument: async () => ({
+          budgetError: { nodes: 120_000, atLeastBytes: 30_000_000, nodesAtLeast: true, budget: 1 },
+        }),
+        accessibilityTree: async () => ({ budgetError: { nodes: 1, bytes: 1, budget: 0 } }),
+      },
+      tryCall: {
+        getDocument: async () => null,
+        notRenderedNodeIds: async () => null,
+        formStateSnapshot: async () => null,
+      },
+    };
+
+    await expect(buildTree(ps, pageTarget(), { fallback: false })).rejects.toThrow(/budget/i);
+  });
+
   it("does not request a stamp when the caller did not ask for read state", async () => {
     const { ps, requested } = pageScriptStub();
 

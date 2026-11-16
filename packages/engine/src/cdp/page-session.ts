@@ -231,6 +231,17 @@ export type SessionSoftOps = {
   readonly [M in QueryDomMethod]: (args: QueryDomArgs<M>) => Promise<QueryDomResult<M> | null>;
 };
 
+const RETIRED = "PageScript generation retired";
+const NO_ISOLATE = "No PageScript isolate for target";
+
+/**
+ * Whether `error` is a read that found no live PageScript generation. `call` throws it where
+ * `tryCall` answers `null`, and a caller that retries on `null` reads this as "no document yet".
+ */
+export function isGoneGeneration(error: unknown): boolean {
+  return error instanceof Error && (error.message === RETIRED || error.message === NO_ISOLATE);
+}
+
 export class PageSession {
   readonly #dctx: DispatchCtx;
   readonly #target: TargetState;
@@ -273,7 +284,7 @@ export class PageSession {
     if (this.#pinned) {
       const stub = this.live();
       if (!stub) {
-        if (kind === "call") throw new Error("PageScript generation retired");
+        if (kind === "call") throw new Error(RETIRED);
         return null;
       }
       try {
@@ -295,7 +306,7 @@ export class PageSession {
     }
     const stub = await this.ready();
     if (!stub) {
-      if (kind === "call") throw new Error("No PageScript isolate for target");
+      if (kind === "call") throw new Error(NO_ISOLATE);
       return null;
     }
     if (kind === "call") return stubQueryDom(stub, method, args);

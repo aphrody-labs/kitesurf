@@ -10,6 +10,7 @@ import { RawJsonResult, type CdpRequest, type TargetState } from "./types.ts";
 import type { DispatchCtx } from "./dispatch.ts";
 import {
   accessibilityTreeResponse,
+  isGoneGeneration,
   sessionOf,
   type AccessibilityTreeReply,
   type AccessibilityTreeRequest,
@@ -326,7 +327,22 @@ export type MeasurePageRead = <T>(phase: string, run: () => Promise<T>) => Promi
 type BuildTreeSession = {
   call?: Pick<SessionOps, "getDocument" | "accessibilityTree">;
   tryCall: Pick<SessionSoftOps, "getDocument" | "notRenderedNodeIds" | "formStateSnapshot">;
+  /** Whether the pinned generation still exists. Absent on a plain stub, which cannot tell. */
+  isLive?: () => boolean;
 };
+
+/**
+ * A `call` read, answered as `null` instead of failing when the generation went away. A retired
+ * generation throws before dispatch and a replaced PageScript rejects mid-call, so ask the session.
+ */
+async function callOrNull<T>(ps: BuildTreeSession, run: () => Promise<T>): Promise<T | null> {
+  try {
+    return await run();
+  } catch (error) {
+    if (isGoneGeneration(error) || ps.isLive?.() === false) return null;
+    throw error;
+  }
+}
 
 type BuildTreeOptions = {
   includeReadState?: boolean;
@@ -380,8 +396,12 @@ async function readDocumentSnapshot(
     const read = <T>(phase: string, run: () => Promise<T>): Promise<T> =>
       options.measureRead ? options.measureRead(phase, run) : run();
     const args = options.includeReadState ? { includeReadStamp: true } : {};
-    // A full document snapshot can hit PageScript's read budget; preserve that error.
-    const readDocument = () => (ps.call ? ps.call.getDocument(args) : ps.tryCall.getDocument(args));
+    // A full document snapshot can hit PageScript's read budget; preserve that error. A read
+    // that finds no live generation is "no document yet", the answer `tryCall` gives, so a caller
+    // that retries on `null` keeps working when a navigation starts mid-read.
+    const call = ps.call;
+    const readDocument = () =>
+      call ? callOrNull(ps, () => call.getDocument(args)) : ps.tryCall.getDocument(args);
     const [docRes, hiddenRes, formRes] = await Promise.all([
       read("axtree.dom", readDocument),
       read("axtree.visibility", () => ps.tryCall.notRenderedNodeIds(args)),
@@ -436,9 +456,12 @@ async function readAccessibilityTree(
   const stampArgs = options.includeReadState ? { includeReadStamp: true } : {};
   const request = accessibilityRequest(ps, target, args, stampArgs);
   const read = () => accessibilityTreeResponse(request, "Accessibility.getFullAXTree");
-  const reply = options.measureRead
-    ? await options.measureRead("axtree.accessibility", read)
-    : await read();
+  // The navigation can also land between the document read and this one; the tree then belongs to
+  // a generation that is gone, so the read answers null like the document read does.
+  const reply = await callOrNull(ps, () =>
+    options.measureRead ? options.measureRead("axtree.accessibility", read) : read(),
+  );
+  if (!reply) return null;
   if ("budgetError" in reply) {
     throw accessibilityBudgetError("Accessibility.getFullAXTree", reply.budgetError);
   }
