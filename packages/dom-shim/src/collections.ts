@@ -414,6 +414,7 @@ Object.defineProperty(DocumentFragmentImpl.prototype, "tagName", {
 let __shadowRootAllowConstruct = false;
 // root.styleSheets is [SameObject].
 const shadowStyleSheets = new WeakMap<ShadowRootImpl, EmptyStyleSheetList>();
+const shadowAdoptedStyleSheets = new WeakMap<ShadowRootImpl, AdoptedStyleSheets>();
 class ShadowRootImpl extends DocumentFragmentImpl implements Idl.ShadowRoot {
   constructor(nodeId: number, info: WrapperInfo) {
     if (!__shadowRootAllowConstruct) {
@@ -466,6 +467,41 @@ class ShadowRootImpl extends DocumentFragmentImpl implements Idl.ShadowRoot {
       shadowStyleSheets.set(this, sheets);
     }
     return sheets;
+  }
+  get adoptedStyleSheets(): Idl.CSSStyleSheet[] {
+    return this._adopted().sheets;
+  }
+  set adoptedStyleSheets(value: Idl.CSSStyleSheet[]) {
+    const sheets = toAdoptedSheets(value);
+    const adopted = this.adoptedStyleSheets;
+    adopted.splice(0, adopted.length, ...sheets);
+  }
+  // Replacing the root's children removes the adopted-sheet mirrors with them.
+  get innerHTML(): string {
+    return super.innerHTML;
+  }
+  set innerHTML(value: string) {
+    super.innerHTML = value;
+    shadowAdoptedStyleSheets.get(this)?.reattach();
+  }
+  get textContent(): string | null {
+    return super.textContent;
+  }
+  set textContent(value: string | null) {
+    super.textContent = value;
+    shadowAdoptedStyleSheets.get(this)?.reattach();
+  }
+  replaceChildren(...nodes: Array<NodeBase | string>): void {
+    super.replaceChildren(...nodes);
+    shadowAdoptedStyleSheets.get(this)?.reattach();
+  }
+  private _adopted(): AdoptedStyleSheets {
+    let adopted = shadowAdoptedStyleSheets.get(this);
+    if (!adopted) {
+      adopted = makeAdoptedStyleSheets(this);
+      shadowAdoptedStyleSheets.set(this, adopted);
+    }
+    return adopted;
   }
 }
 
@@ -3133,7 +3169,30 @@ function styleSheetFields(sheet: object): StyleSheetFields {
 }
 
 // The adoptedStyleSheets binding mirrors a constructed sheet's rules into a
-// hidden <style> per adopting document.
+// hidden <style> per adopting document or shadow root.
+// https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets
+// Only constructed sheets can be adopted; each is checked before any is set.
+export function toAdoptedSheets(value: unknown): Idl.CSSStyleSheet[] {
+  if (value == null || typeof (value as Iterable<unknown>)[Symbol.iterator] !== "function") {
+    throw new TypeError("Failed to set 'adoptedStyleSheets': the value is not iterable");
+  }
+  const sheets = Array.from(value as Iterable<unknown>);
+  for (const sheet of sheets) {
+    const record = sheet && typeof sheet === "object" ? sheetRecords.get(sheet) : undefined;
+    if (!record) {
+      throw new TypeError("Failed to set 'adoptedStyleSheets': an entry is not a CSSStyleSheet");
+    }
+    if (!record.backend.attachMirror) {
+      throw new DOMException(
+        "Failed to set 'adoptedStyleSheets': can't adopt a non-constructed stylesheet",
+        "NotAllowedError",
+      );
+    }
+  }
+  // SAFETY: every entry has a sheet record, which only CSSStyleSheet instances get.
+  return sheets as Idl.CSSStyleSheet[];
+}
+
 function attachSheetMirror(sheet: object, styleEl: Element): void {
   sheetRecords.get(sheet)?.backend.attachMirror?.(styleEl);
 }
@@ -3337,23 +3396,56 @@ for (const [n, C] of Object.entries(CSSOM_GLOBALS) as Array<[string, { prototype
   });
 }
 
+interface AdoptedStyleSheets {
+  sheets: Idl.CSSStyleSheet[];
+  // Put every mirror back at the end of its root, in array order.
+  reattach(): void;
+}
+
 // adoptedStyleSheets is an ObservableArray. Its proxy reconciles membership
-// changes by creating/removing hidden `<style>` mirrors in the live document;
-// those real nodes appear in styleSheets and participate in the paint cascade.
-function makeAdoptedStyleSheets() {
+// changes by creating/removing hidden `<style>` mirrors in the adopting root;
+// those real nodes appear in styleSheets and participate in the paint cascade,
+// after the root's own sheets and in array order.
+function makeAdoptedStyleSheets(root?: ShadowRootImpl): AdoptedStyleSheets {
   const arr: Idl.CSSStyleSheet[] = [];
   const mirrors = new WeakMap<object, Element>();
+  function mirrorParent(): NodeBase | null {
+    if (root) return root;
+    const doc = liveDocument();
+    return doc.head || doc.documentElement;
+  }
   function ensureMirror(sheet: Idl.CSSStyleSheet) {
     if (!sheet || typeof sheet !== "object") return;
     if (mirrors.has(sheet)) return;
     try {
       const styleEl = createElementInternal("style");
       styleEl.setAttribute("data-ks-adopted", "");
-      const doc = liveDocument();
-      const head = doc.head || doc.documentElement;
-      if (head) head.appendChild(styleEl);
+      const parent = mirrorParent();
+      if (parent) parent.appendChild(styleEl);
       mirrors.set(sheet, styleEl);
       attachSheetMirror(sheet, styleEl);
+    } catch {}
+  }
+  // A child-list replacement (innerHTML, textContent, replaceChildren) on the
+  // root removes its mirrors; a removed one is replaced by a fresh mirror. The
+  // mirrors are real children, visible in childNodes, until blitz-dom can feed
+  // a shadow root's cascade without a node.
+  function reattach() {
+    const parent = mirrorParent();
+    if (!parent) return;
+    const ordered = new Set<Element>();
+    for (const sheet of arr) {
+      if (mirrors.get(sheet)?.parentNode !== parent) {
+        dropMirror(sheet);
+        ensureMirror(sheet);
+      }
+      const styleEl = mirrors.get(sheet);
+      if (styleEl) ordered.add(styleEl);
+    }
+    // Moving a <style> reparses its sheet, so only move when the order is wrong.
+    if (endsWith(parent, ordered)) return;
+    try {
+      for (const styleEl of ordered) parent.appendChild(styleEl);
     } catch {}
   }
   function dropMirror(sheet: Idl.CSSStyleSheet) {
@@ -3368,6 +3460,7 @@ function makeAdoptedStyleSheets() {
   function reconcile(prevSet: Set<Idl.CSSStyleSheet>, nextSet: Set<Idl.CSSStyleSheet>) {
     for (const s of prevSet) if (!nextSet.has(s)) dropMirror(s);
     for (const s of nextSet) if (!prevSet.has(s)) ensureMirror(s);
+    reattach();
   }
   function snapshotSet(a: readonly Idl.CSSStyleSheet[]) {
     const s = new Set<Idl.CSSStyleSheet>();
@@ -3412,9 +3505,19 @@ function makeAdoptedStyleSheets() {
       return ok;
     },
   });
-  return proxy;
+  return { sheets: proxy, reattach };
 }
-export const adoptedStyleSheets = makeAdoptedStyleSheets();
+
+function endsWith(parent: NodeBase, tail: Set<Element>): boolean {
+  const children = parent.childNodes;
+  let index = children.length - tail.size;
+  if (index < 0) return false;
+  for (const node of tail) {
+    if (children[index++] !== node) return false;
+  }
+  return true;
+}
+export const adoptedStyleSheets = makeAdoptedStyleSheets().sheets;
 
 function makeStyleSheetList(): ItemList<CSSStyleSheetCtor> {
   const list: CSSStyleSheetCtor[] = [];

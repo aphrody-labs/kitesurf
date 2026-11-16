@@ -114,6 +114,7 @@ import {
   filterByQualifiedName,
   makeStyleSheetList,
   adoptedStyleSheets,
+  toAdoptedSheets,
   type DocumentFragmentImpl,
   type HtmlCollectionCls,
   type NodeListCls,
@@ -797,12 +798,8 @@ class DocumentImpl extends NodeBase implements Idl.Document {
   }
   // The IDL's type; the page's value is not checked beyond being iterable.
   set adoptedStyleSheets(v: Idl.CSSStyleSheet[]) {
-    // Clear, then push each sheet, so the mirror reconcile runs.
-    const a = adoptedStyleSheets;
-    a.length = 0;
-    if (v && typeof v[Symbol.iterator] === "function") {
-      for (const s of v) a.push(s);
-    }
+    const sheets = toAdoptedSheets(v);
+    adoptedStyleSheets.splice(0, adoptedStyleSheets.length, ...sheets);
   }
   // body when nothing has focus.
   get activeElement() {
