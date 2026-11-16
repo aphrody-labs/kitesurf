@@ -39024,5 +39024,109 @@
   "/html/semantics/document-metadata/the-meta-element/pragma-directives/attr-meta-http-equiv-refresh/parsing.html?131-last": {
     "expected": "PASS",
     "reason": "document.referrer on frame documents: measured PASS on two runs"
+  },
+  "/css/CSS2/normal-flow/block-in-inline-nested-001.xht": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/CSS2/normal-flow/block-in-inline-nested-002.xht": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/CSS2/normal-flow/block-in-inline-percents-001.xht": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-cascade/layer-stylesheet-multi-adoption.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-cascade/scope-shadow.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-display/display-contents-shadow-dom-1.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-empty-container-with-filter.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-negative-scale.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-on-thin-stroked-path-default.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-text-001.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-type-001.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-type-002.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-type-003.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-with-filter-clipped-to-region.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-with-filter.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-masking/mask-svg-content/mask-with-rotation.svg": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-shadow/reslot-text-inheritance.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-shadow/shadow-host-style-sharing.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/css-shadow/shadow-host-with-before-after.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/cssom/StyleSheetList-constructable-shadow-with-style-recalc.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/cssom/StyleSheetList-constructable-shadow.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/cssom/StyleSheetList-constructable-with-style-recalc.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/cssom/StyleSheetList-constructable.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/cssom/adoptedstylesheets-cascade-order.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/css/cssom/adoptedstylesheets-observablearray.html": {
+    "expected": "FAIL",
+    "reason": null
+  },
+  "/html/rendering/bidi-rendering/slot-no-isolate-001.html": {
+    "expected": "FAIL",
+    "reason": null
   }
 }
