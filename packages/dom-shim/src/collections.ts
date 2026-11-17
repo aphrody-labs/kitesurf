@@ -3174,6 +3174,7 @@ interface CSSStyleSheetBackend {
   replace(text: unknown): Promise<Idl.CSSStyleSheet>;
   attachMirror?(styleEl: Element): void;
   detachMirror?(styleEl: Element): void;
+  disabledChanged?(): void;
 }
 interface SheetRecord {
   fields: StyleSheetFields;
@@ -3256,7 +3257,10 @@ class StyleSheetCls implements Idl.StyleSheet {
     return styleSheetFields(this).disabled;
   }
   set disabled(v: boolean) {
-    styleSheetFields(this).disabled = !!v;
+    const record = sheetRecord(this);
+    if (record.fields.disabled === !!v) return;
+    record.fields.disabled = !!v;
+    record.backend.disabledChanged?.();
   }
 }
 
@@ -3267,8 +3271,19 @@ class CSSStyleSheetCtor extends StyleSheetCls implements Idl.CSSStyleSheet {
     super(STYLE_SHEET_TOKEN);
     const rules = makeRuleList([]);
     const mirrors = new Set<Element>();
+    const fields: StyleSheetFields = {
+      ownerNode: null,
+      href: null,
+      title: null,
+      media: makeEmptyMediaList(),
+      disabled: !!(options && options.disabled),
+      ownerRule: null,
+      parentStyleSheet: null,
+    };
+    // A disabled sheet stays adopted but leaves the cascade, so its mirrors hold no rules.
+    const mirrorText = () => (fields.disabled ? "" : rules.map((r) => r.cssText).join("\n"));
     const rerender = () => {
-      const text = rules.map((r) => r.cssText).join("\n");
+      const text = mirrorText();
       for (const styleEl of mirrors) {
         try {
           styleEl.textContent = text;
@@ -3328,25 +3343,15 @@ class CSSStyleSheetCtor extends StyleSheetCls implements Idl.CSSStyleSheet {
         mirrors.add(styleEl);
         // Push the current rules now so the cascade sees them on the next paint.
         try {
-          styleEl.textContent = rules.map((r) => r.cssText).join("\n");
+          styleEl.textContent = mirrorText();
         } catch {}
       },
       detachMirror(styleEl) {
         mirrors.delete(styleEl);
       },
+      disabledChanged: rerender,
     };
-    sheetRecords.set(this, {
-      fields: {
-        ownerNode: null,
-        href: null,
-        title: null,
-        media: makeEmptyMediaList(),
-        disabled: !!(options && options.disabled),
-        ownerRule: null,
-        parentStyleSheet: null,
-      },
-      backend,
-    });
+    sheetRecords.set(this, { fields, backend });
   }
   get ownerRule() {
     return styleSheetFields(this).ownerRule;
