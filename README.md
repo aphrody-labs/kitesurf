@@ -15,6 +15,11 @@ so you can use it with CDP clients such as Puppeteer.
 > Local development uses `wrangler dev`. A Cloudflare Workers Paid plan is
 > required to run Kitesurf on Cloudflare.
 
+> [!WARNING]
+> Do not open untrusted sites with a local Kitesurf. Locally, Kitesurf runs
+> page JavaScript in `workerd`, which
+> [is not a hardened sandbox](https://developers.cloudflare.com/workers/local-development/#security-considerations).
+
 ## Requirements
 
 - [Bazelisk](https://github.com/bazelbuild/bazelisk), installed as `bazel`.
