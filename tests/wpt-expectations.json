@@ -8824,8 +8824,8 @@
     "reason": null
   },
   "/css/cssom/CSSStyleSheet-constructable-concat.html": {
-    "expected": "FAIL",
-    "reason": "Shadow DOM not implemented. Test does host.attachShadow({mode:'open'}); shadow.adoptedStyleSheets = ... Our shim has no attachShadow on HTMLElement.prototype. 2 of 4 assertions (the document-level ones) succeed; the 2 shadow-level ones fail. Diff is mostly the PASS/FAIL text in <pre>. Same blocker as any other shadow-DOM test in the suite."
+    "expected": "PASS",
+    "reason": null
   },
   "/css/cssom/CSSStyleSheet-constructable-cssRules.html": {
     "expected": "PASS",
@@ -8848,7 +8848,7 @@
     "reason": null
   },
   "/css/cssom/CSSStyleSheet-constructable-invalidation.html": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/css/cssom/CSSStyleSheet-constructable-replace-cssRules.html": {
@@ -12615,7 +12615,7 @@
     "reason": "4/6 pass. The two 'should be stripped' subtests set an author RequestInit.referrer, which the page fetch shim doesn't thread to the gateway (buildForwardRequest synthesizes Referer from pageUrl only). They previously PASSed by accident: previously we sent origin-only Referer, which coincidentally equals the expected stripped value. The wave-2 full-URL same-origin Referer (browser-correct; fixed 'origin-when-cross-origin on a same-origin URL') exposed the gap. Fix = honor init.referrer (same-origin-with-client check + userinfo/fragment strip, per-hop interaction with the redirect loop) \u2014 separate slice."
   },
   "/fetch/api/basic/request-forbidden-headers.any.html": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null,
     "timeout": 15000
   },
@@ -18410,7 +18410,7 @@
     "reason": null
   },
   "/html/semantics/embedded-content/the-iframe-element/sandbox_005.htm": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/html/semantics/embedded-content/the-iframe-element/sandbox_011.htm": {
@@ -18474,7 +18474,7 @@
     "reason": null
   },
   "/html/semantics/embedded-content/the-iframe-element/sandbox_029.htm": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/html/semantics/embedded-content/the-iframe-element/sandbox_030.htm": {
@@ -18482,7 +18482,7 @@
     "reason": null
   },
   "/html/semantics/embedded-content/the-iframe-element/sandbox_031.htm": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/html/semantics/embedded-content/the-iframe-element/sandbox_032.htm": {
@@ -19080,7 +19080,7 @@
     "reason": null
   },
   "/html/semantics/scripting-1/the-script-element/module/dynamic-import/microtasks/with-import-assertions.any.html": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/html/semantics/scripting-1/the-script-element/module/import-meta/import-meta-object.any.html": {
@@ -19976,7 +19976,7 @@
     "reason": null
   },
   "/selection/move-selection-range-into-different-root.tentative.html": {
-    "expected": "FAIL",
+    "expected": "PASS",
     "reason": null
   },
   "/selection/onselectionchange-on-distinct-text-controls.html": {
