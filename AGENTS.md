@@ -200,7 +200,8 @@ Use an explicit `KITESURF_PORT` or `--port` when other engines may be running, a
 ### Tests
 
 - Never run a full suite unless asked; the runners are slow and memory-hungry. CI runs the
-  Playwright lane, but not the e2e or WPT lanes. Before reporting work complete, run
+  Playwright lane and the WPT gate (`scripts/wpt-ci.sh`), but not the e2e lane; a fork's pull
+  request skips both, and main runs them once it merges. Before reporting work complete, run
   `pnpm run check` and the smallest relevant e2e subset. Uncaught workerd errors fail a run even
   if assertions pass.
 - Do not put `--` before test arguments; pnpm forwards it and the runners misread it.
