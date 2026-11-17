@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
+Date: Tue, 17 Nov 2026 17:56:16 +0000
+Subject: [PATCH] Resolve no style for elements outside the flat tree
+
+resolve_undisplayed_style answers getComputedStyle() for elements under
+display:none, which the style traversal culls. It also answered for elements
+the traversal never reaches for another reason: an unslotted child of a
+shadow host, and the fallback content of a slot that has assigned nodes.
+Those are not rendered at all, and browsers report no computed style for
+them (WPT html/dom/elements/global-attributes/dir-shadow-39.html). Walk the
+flat-tree links up to the document and resolve nothing when one is missing.
+
+Signed-off-by: bpereira <bpereira@cloudflare.com>
+---
+ src/stylo.rs | 31 ++++++++++++++++++++++++++++++-
+ 1 file changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/src/stylo.rs b/src/stylo.rs
+index 9a5d837..e4a0b94 100644
+--- a/src/stylo.rs
++++ b/src/stylo.rs
+@@ -220,6 +220,35 @@ impl crate::document::BaseDocument {
+         style::thread_state::exit(ThreadState::LAYOUT);
+     }
+
++    /// Whether every ancestor link from `node_id` up to the document is a flat-tree edge. An
++    /// unslotted child of a shadow host and the fallback content of a slot that has assigned
++    /// nodes are not rendered at all, and `getComputedStyle()` reports nothing for them.
++    fn is_in_flat_tree(&self, node_id: NodeId) -> bool {
++        let mut id = node_id;
++        loop {
++            let node = &self.nodes[id];
++            if let Some(slot_id) = node.assigned_slot() {
++                id = slot_id;
++                continue;
++            }
++            let Some(parent_id) = node.parent_id() else {
++                return true;
++            };
++            let parent = &self.nodes[parent_id];
++            if let Some(data) = parent.shadow_root_data() {
++                id = data.host;
++                continue;
++            }
++            if parent.element_data().is_some_and(|data| data.shadow_root().is_some()) {
++                return false;
++            }
++            if parent.assigned_nodes().is_some_and(|nodes| !nodes.is_empty()) {
++                return false;
++            }
++            id = parent_id;
++        }
++    }
++
+     /// Compute the style of an element which the regular style traversal
+     /// skipped because it lives inside a `display: none` subtree.
+     ///
+@@ -230,6 +259,6 @@ impl crate::document::BaseDocument {
+     /// node. Returns `None` for non-elements and elements outside the document.
+     pub fn resolve_undisplayed_style(&self, node_id: NodeId) -> Option<Arc<ComputedValues>> {
+         let node = self.nodes.get(node_id)?;
+-        if !node.is_element() || !node.flags.is_in_document() {
++        if !node.is_element() || !node.flags.is_in_document() || !self.is_in_flat_tree(node_id) {
+             return None;
+         }

@@ -108,6 +108,19 @@ test("pseudo styles resolve under display:none", async ({ page }) => {
   ).toBe("rgb(4, 5, 6)");
 });
 
+test("fallback content of a filled slot reports no computed style", async ({ page }) => {
+  await setContent(page, `<div id=host>slotted</div><div id=empty-host></div>`);
+  const directions = await page.evaluate(() => {
+    const fallback = (hostId: string) => {
+      const root = document.getElementById(hostId)!.attachShadow({ mode: "open" });
+      root.innerHTML = `<slot><div dir=rtl>fallback</div></slot>`;
+      return getComputedStyle(root.querySelector("div")!).direction;
+    };
+    return { filled: fallback("host"), empty: fallback("empty-host") };
+  });
+  expect(directions).toEqual({ filled: "", empty: "rtl" });
+});
+
 test("cousin styles stay distinct under cache pressure and ancestor mutation", async ({ page }) => {
   const groupCount = 96;
   await setContent(
