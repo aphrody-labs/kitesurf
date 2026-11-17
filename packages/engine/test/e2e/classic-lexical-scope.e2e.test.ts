@@ -132,3 +132,26 @@ test("a function can be used before its declaration, and keeps its name and form
     named: "undefined",
   });
 }, 60_000);
+
+// A nested template literal desyncs the declaration scan. The segment must still run:
+// the scan used to list the IIFE's function as top-level and the hoist line threw.
+const desynced = [
+  "<script>",
+  "  !function () {",
+  "    var c = `${`}`}`;",
+  "    function helper() { return 1; }",
+  "    globalThis.__helper = helper();",
+  "  }();",
+  "</script>",
+  "<script>",
+  "  globalThis.__afterDesync = JSON.stringify({ helper: globalThis.__helper });",
+  "</script>",
+].join("\n");
+
+test("a script whose scan desyncs on a nested template still runs", async ({
+  page,
+  cdpSession,
+}) => {
+  await setContent(page, desynced, { waitUntil: "domcontentloaded" });
+  expect(await readJsonReport(cdpSession, "globalThis.__afterDesync")).toEqual({ helper: 1 });
+}, 60_000);

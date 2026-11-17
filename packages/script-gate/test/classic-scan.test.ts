@@ -100,7 +100,8 @@ test("each strippable var site lists its own names", () => {
 test("lexical and class declarations report their sites", () => {
   const source = "let a = 1; const b = 2; class C {}";
   const scan = extractTopLevelDecls(source);
-  assert.deepEqual(scan.lexicalNames, ["a", "b"]);
+  // A class rewrite assigns the name, so the wrapper declares it like a lexical binding.
+  assert.deepEqual(scan.lexicalNames, ["a", "b", "C"]);
   assert.deepEqual(scan.classNames, ["C"]);
   assert.equal(scan.lexicalSites.length, 2);
   assert.equal(scan.classSites.length, 1);
@@ -147,4 +148,16 @@ test("only a function or class in statement position is a declaration", () => {
   assert.deepEqual(declared("async\nfunction f(){}"), ["f"]);
   const scan = extractTopLevelDecls("x(); async function name(){}");
   assert.deepEqual(scan.functionNameSites, ["x(); async function ".length]);
+});
+
+test("a closer at depth 0 marks the scan unreliable", () => {
+  assert.equal(extractTopLevelDecls("var a = 1; function f(){}").unreliable, false);
+  // A nested template literal desyncs the string handling, so a later `}` or `)` is
+  // seen at depth 0 even though the script is valid.
+  assert.equal(
+    extractTopLevelDecls("!function(){ var c = `${`}`}`; function helper(){return 1} }();")
+      .unreliable,
+    true,
+  );
+  assert.equal(extractTopLevelDecls("var s = `a${b}c`; var after = 1;").unreliable, false);
 });

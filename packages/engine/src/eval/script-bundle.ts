@@ -193,16 +193,21 @@ function buildClassicSegment(
   // Renamed, each declaration is still hoisted to the block start, where `f` is pointed at it.
   const hoistedFunctions = new Map<string, string>();
   const renamedFunctions: { name: string; internal: string }[] = [];
-  for (let i = 0; i < scan.functionNameSites.length; i++) {
-    const start = scan.functionNameSites[i];
-    const name = scan.functionNames[i];
-    if (start === undefined || name === undefined || blockedNames.has(name)) continue;
-    // One name per declaration: a strict block refuses two declarations of the same name.
-    const internal = `__ks_fn${i}_${name}`;
-    edits.push({ start, end: start + name.length, text: internal });
-    // The last declaration of a name is the one the script sees, as at the top level.
-    hoistedFunctions.set(name, internal);
-    renamedFunctions.push({ name, internal });
+  // A desynced scan can list a function that is not top-level, and the hoist line would
+  // then reference a name that is out of scope and throw before the script starts. Leave
+  // such a segment unrewritten; it keeps the pre-bundle behaviour instead.
+  if (!scan.unreliable) {
+    for (let i = 0; i < scan.functionNameSites.length; i++) {
+      const start = scan.functionNameSites[i];
+      const name = scan.functionNames[i];
+      if (start === undefined || name === undefined || blockedNames.has(name)) continue;
+      // One name per declaration: a strict block refuses two declarations of the same name.
+      const internal = `__ks_fn${i}_${name}`;
+      edits.push({ start, end: start + name.length, text: internal });
+      // The last declaration of a name is the one the script sees, as at the top level.
+      hoistedFunctions.set(name, internal);
+      renamedFunctions.push({ name, internal });
+    }
   }
   const hoistFunctions =
     [...hoistedFunctions].map(([name, internal]) => `${name} = ${internal}; `).join("") +
@@ -244,24 +249,23 @@ ${lines.join("\n")}
   // listener sees nothing for a script that threw.
   const reportException = `try { if (__ks_state_local.pushException) __ks_state_local.pushException(__ks_segment_error, { scriptId: "bundle:classic-regular", url: ${JSON.stringify(label)} }); } catch {}`;
   // Load still fires after the currentScript reset, as it did when the segment body ran
-  // unwrapped; only the ok flag changes.
+  // unwrapped, and a throw does not change that: the spec fires `error` only when the
+  // fetch fails. https://html.spec.whatwg.org/multipage/scripting.html#execute-the-script-element
   const lifecycleDynamic =
     !bracket || !d.src
       ? ""
-      : `if (__ks_state_local.parserScriptLifecycle) { if (__ks_segment_ok) { await __ks_state_local.parserScriptLifecycle(${domIdx}, ${JSON.stringify(rawSrc)}, ${JSON.stringify(currentScriptUrl)}, true); } else { await __ks_state_local.parserScriptLifecycle(${domIdx}, ${JSON.stringify(rawSrc)}, ${JSON.stringify(currentScriptUrl)}, false); } }\n`;
+      : `if (__ks_state_local.parserScriptLifecycle) { await __ks_state_local.parserScriptLifecycle(${domIdx}, ${JSON.stringify(rawSrc)}, ${JSON.stringify(currentScriptUrl)}, true); }\n`;
   // hoistFunctions stays on the `try {` line, so the body keeps its line numbers.
-  const segmentBody = `var __ks_segment_ok = false;
-try { ${hoistFunctions}
+  const segmentBody = `try { ${hoistFunctions}
 ${bodySource}
-${promoteTail}__ks_segment_ok = true;
-} catch (__ks_segment_error) {
+${promoteTail}} catch (__ks_segment_error) {
   ${reportException}
   console.error("classic script threw: " + String(__ks_segment_error && __ks_segment_error.message || __ks_segment_error));
 } finally {
 ${clearCurrent}${lifecycleDynamic}}\n`;
   return {
     source: `${prefix}${segmentBody}`,
-    sourceLineOffset: countLines(prefix) + 2,
+    sourceLineOffset: countLines(prefix) + 1,
     // Function names join the hoisted bindings, since the block's first line assigns them.
     lexicalNames: [...scan.lexicalNames, ...hoistedFunctions.keys()],
   };

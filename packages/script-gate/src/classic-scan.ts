@@ -19,6 +19,10 @@ export interface TopLevelDeclScan {
   // declaration in statement position is listed; a function expression is not.
   functionNameSites: number[];
   functionNames: string[];
+  // Set when the scan meets a closer at depth 0, which valid top-level code never does.
+  // A template literal with a nested `${}` desyncs the string handling, so later
+  // declarations may be misread; callers must not rewrite names from such a scan.
+  unreliable: boolean;
 }
 
 type TopLevelKeyword = "var" | "let" | "const" | "function" | "class";
@@ -43,6 +47,7 @@ export function extractTopLevelDecls(source: string): TopLevelDeclScan {
   let braceDepth = 0;
   let parenDepth = 0;
   let bracketDepth = 0;
+  let unreliable = false;
   let stringDelimiter: "" | '"' | "'" | "`" = "";
   let inLineComment = false;
   let inBlockComment = false;
@@ -461,6 +466,9 @@ export function extractTopLevelDecls(source: string): TopLevelDeclScan {
     if (keyword === "class") {
       classSites.push(keywordStart);
       classNames.push(identifier.name);
+      // The rewrite assigns the class to this name, so the wrapper must declare it:
+      // in a strict inserted script an assignment to an undeclared name throws.
+      lexicalNames.push(identifier.name);
       const bodyEnd = skipClassBody(identifier.end);
       classEnds.push(bodyEnd);
       return bodyEnd;
@@ -549,6 +557,7 @@ export function extractTopLevelDecls(source: string): TopLevelDeclScan {
     }
     if (currentChar === "}") {
       if (braceDepth > 0) braceDepth--;
+      else unreliable = true;
       sourceOffset++;
       noteToken("punct", "}");
       continue;
@@ -562,6 +571,7 @@ export function extractTopLevelDecls(source: string): TopLevelDeclScan {
     }
     if (currentChar === ")") {
       if (parenDepth > 0) parenDepth--;
+      else unreliable = true;
       previousParenClosedControlHead = CONTROL_HEAD_WORDS.has(wordBeforeOpenParen.pop() ?? "");
       sourceOffset++;
       noteToken("punct", ")");
@@ -575,6 +585,7 @@ export function extractTopLevelDecls(source: string): TopLevelDeclScan {
     }
     if (currentChar === "]") {
       if (bracketDepth > 0) bracketDepth--;
+      else unreliable = true;
       sourceOffset++;
       noteToken("punct", "]");
       continue;
@@ -617,6 +628,7 @@ export function extractTopLevelDecls(source: string): TopLevelDeclScan {
     classEnds,
     functionNameSites,
     functionNames,
+    unreliable,
   };
 }
 

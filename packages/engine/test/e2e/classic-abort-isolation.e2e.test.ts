@@ -43,3 +43,20 @@ test("a throwing classic script does not stop later scripts", async ({ page, cdp
     "captured page errors: " + JSON.stringify(pageErrors),
   ).toBe(true);
 }, 60_000);
+
+// The HTML spec fires load after an external script runs, also when it throws; error
+// means the fetch failed.
+// https://html.spec.whatwg.org/multipage/scripting.html#execute-the-script-element
+const externalThrow = `<script src="data:text/javascript,throw%20new%20Error(%22external%20boom%22)" onload="window.__externalLifecycle=JSON.stringify({event:'load'})" onerror="window.__externalLifecycle=JSON.stringify({event:'error'})"></script>
+<script>window.__afterExternal = 1;</script>`;
+
+test("an external script that throws gets load, not error", async ({ page, cdpSession }) => {
+  await setContent(page, externalThrow, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(
+    () => (globalThis as { __afterExternal?: number }).__afterExternal === 1,
+    { timeout: 20_000 },
+  );
+  expect(await readJsonReport(cdpSession, "globalThis.__externalLifecycle")).toEqual({
+    event: "load",
+  });
+}, 60_000);
