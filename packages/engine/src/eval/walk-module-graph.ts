@@ -1220,8 +1220,11 @@ export async function walkModuleGraph({
         modules.delete(fromUrl);
         return;
       }
-      if (resolved.startsWith("data:")) continue;
-      if (!isPageModuleUrl(resolved)) {
+      // A static data: import is baked like an http(s) one, under a synthetic registry name; the
+      // native specifier would not resolve against the importer's name. import() loads it natively.
+      const dataModule = resolved.startsWith("data:");
+      if (dataModule && isDynamic) continue;
+      if (!dataModule && !isPageModuleUrl(resolved)) {
         // A dynamic import is rewritten to the runtime loader below, which refuses it.
         if (isDynamic) continue;
         failed.set(
@@ -1233,7 +1236,8 @@ export async function walkModuleGraph({
         return;
       }
       if (modules.has(resolved) || failed.has(resolved)) continue;
-      if (/\.wasm$/i.test(new URL(resolved).pathname)) {
+      // A data: URL has no path; its payload is source, not a file name.
+      if (!dataModule && /\.wasm$/i.test(new URL(resolved).pathname)) {
         failed.set(
           resolved,
           "wasm modules in the ES-module graph are not supported " +
@@ -1365,7 +1369,9 @@ export async function walkModuleGraph({
         url,
         integrity: integrityByUrl.get(url) ?? null,
         nonce: nonceByUrl.get(url) ?? null,
-        runtimeInserted: viaTrustedImporter.has(url),
+        // 'strict-dynamic' does not trust a data: import by its importer; the importer's nonce,
+        // which the import inherits, or a data: source still allows it.
+        runtimeInserted: viaTrustedImporter.has(url) && !url.startsWith("data:"),
         module: true,
       });
       if (pre.reportOnly) console.warn(`[kitesurf-csp] ${pre.reportOnly}`);
@@ -1517,7 +1523,8 @@ export async function walkModuleGraph({
       return true;
     }
     modules.set(url, fetched.body);
-    bakedBytes += fetched.body.length;
+    // The bake also holds a data: module's URL, which is as large as its source.
+    bakedBytes += fetched.body.length + (url.startsWith("data:") ? url.length : 0);
     if (!lexed.has(url)) {
       lexed.add(url);
       crawlImports(url, fetched.body);
@@ -1552,6 +1559,9 @@ export async function walkModuleGraph({
     for (const f of w) f();
   };
 
+  const overBudget = (item: WalkQueueItem): boolean =>
+    (item.isDynamic || item.url.startsWith("data:")) && bakedBytes >= BAKE_BUDGET_BYTES;
+
   const itemClass = (item: WalkQueueItem): number =>
     !item.isDynamic ? 0 : item.importerDynFanout > FANOUT_REGISTRY_THRESHOLD ? 2 : 1;
 
@@ -1577,7 +1587,9 @@ export async function walkModuleGraph({
         }
         continue;
       }
-      if (item.isDynamic && bakedBytes >= BAKE_BUDGET_BYTES) continue;
+      // A data: module's source can import a larger data: URL, so a static chain of them is held
+      // to the budget like a dynamic import.
+      if (overBudget(item)) continue;
       if (item.viaRegistry && pastDeadline()) {
         deadlineSkipped++;
         continue;
@@ -1629,7 +1641,7 @@ export async function walkModuleGraph({
       } else if (item.sizeCapped && result.body.length > MAX_DYNAMIC_MODULE_BYTES) {
         oversizedDynamicSkipped++;
         sizeSkipped.add(item.url);
-      } else if (!(item.isDynamic && bakedBytes >= BAKE_BUDGET_BYTES)) {
+      } else if (!overBudget(item)) {
         storeFetched(item.url, result);
       }
     }
@@ -1694,7 +1706,8 @@ export async function walkModuleGraph({
             if (
               modules.has(item.url) ||
               failed.has(item.url) ||
-              (item.isDynamic && (bakedBytes >= BAKE_BUDGET_BYTES || pastDeadline()))
+              overBudget(item) ||
+              (item.isDynamic && pastDeadline())
             ) {
               continue;
             }
@@ -1713,7 +1726,7 @@ export async function walkModuleGraph({
               recordFetchFailure(item.url, r.error);
               continue;
             }
-            if (!storeFetched(item.url, r)) continue;
+            if (overBudget(item) || !storeFetched(item.url, r)) continue;
             if (r.moduleType === "javascript") scanForIds(r.body);
           }
         }
@@ -1848,7 +1861,7 @@ export async function walkModuleGraph({
     for (const imp of lexCache.get(fromUrl) ?? []) {
       if (imp.t !== 1 || !imp.n) continue;
       const resolved = resolveModule(imp.n, responseUrlByRequest.get(fromUrl) ?? fromUrl);
-      if (!resolved || !isPageModuleUrl(resolved)) continue;
+      if (!resolved || (!isPageModuleUrl(resolved) && !resolved.startsWith("data:"))) continue;
       const importers = staticImporters.get(resolved) ?? new Set<string>();
       importers.add(fromUrl);
       staticImporters.set(resolved, importers);
