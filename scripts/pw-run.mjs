@@ -51,7 +51,7 @@ const specIdx = args.indexOf("--spec");
 const spec = specIdx >= 0 ? args[specIdx + 1] : null;
 
 if (!existsSync(join(PW_DIR, "packages/playwright/cli.js"))) {
-  console.error("[pw-run] .playwright/ missing or unbuilt — run `pnpm run pw:setup` first");
+  console.error("[pw-run] .playwright/ missing or unbuilt — run `bun run pw:setup` first");
   process.exit(1);
 }
 

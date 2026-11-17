@@ -69,7 +69,7 @@ function regenOne({ name, version }) {
   if (!existsSync(join(patchedDir, ".git"))) {
     throw new Error(
       `no materialised git repo for ${name}-${version} at ${patchedDir}\n` +
-        `  Run \`pnpm run vendor:apply\` first.`,
+        `  Run \`bun run vendor:apply\` first.`,
     );
   }
 
@@ -78,7 +78,7 @@ function regenOne({ name, version }) {
   } catch {
     throw new Error(
       `${name}-${version}: no \`vendor-base\` tag in ${patchedDir}. ` +
-        `Re-materialise with \`pnpm run vendor:apply\` after saving your edits.`,
+        `Re-materialise with \`bun run vendor:apply\` after saving your edits.`,
     );
   }
 

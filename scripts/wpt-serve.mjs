@@ -12,7 +12,7 @@ const ROOT = resolve(__dirname, "..");
 const WPT_DIR = resolve(ROOT, ".wpt");
 
 if (!existsSync(WPT_DIR)) {
-  console.error("[wpt-serve] .wpt/ not found. Run `pnpm run wpt:setup` first.");
+  console.error("[wpt-serve] .wpt/ not found. Run `bun run wpt:setup` first.");
   process.exit(2);
 }
 

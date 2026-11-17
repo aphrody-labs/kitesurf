@@ -22,7 +22,7 @@ import { dirname, join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const PATCH_DIR = resolve(ROOT, "scripts/patches/playwright");
-const USAGE = `usage: node scripts/pw-spec.mjs --spec <file> --dist <engine dist> --out-dir <dir>
+const USAGE = `usage: bun scripts/pw-spec.mjs --spec <file> --dist <engine dist> --out-dir <dir>
        [--pw-base <directory>] [--max-wall-ms <ms>] [--keep-deviations]
 --pw-base defaults to KITESURF_PW_BASE or .playwright. The checkout must be built by pw:setup.
 It exits 2 when the spec deviates from its expectations after the retry; --keep-deviations
@@ -65,7 +65,7 @@ function checkTag(base) {
   if (!tag || version !== tag)
     fail(`Playwright checkout at ${base} is ${version || "missing"}, setup pins ${tag}`);
   if (!existsSync(resolve(base, "packages/playwright/cli.js")))
-    fail(`${base} is not built; run pnpm run pw:setup`);
+    fail(`${base} is not built; run bun run pw:setup`);
 }
 
 function overlay(base) {

@@ -10,7 +10,7 @@ import { isMain } from "./wpt-shared.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const ENGINE_DIR = resolve(ROOT, "packages/engine");
-const USAGE = `usage: node scripts/e2e-shards.mjs --durations <file>... [--target-s <s>] [--workers <n>] [--out <file>]
+const USAGE = `usage: bun scripts/e2e-shards.mjs --durations <file>... [--target-s <s>] [--workers <n>] [--out <file>]
 A durations file is a vitest JSON report or a { "test/e2e/<file>": ms } map. Defaults: 60 s, 3
 workers, tests/e2e/shards.bzl.`;
 

@@ -34,10 +34,10 @@ import { DEFAULT_DIST, prepare as prepareEngineDist } from "./wpt-engine.mjs";
 const ENGINE_CWD = resolve(ROOT, "packages/engine");
 const EXEC = resolve(ROOT, "scripts/wpt-exec.mjs");
 
-const HELP = `Usage: pnpm run test:wpt [options]   (node scripts/wpt-batched.mjs)
+const HELP = `Usage: bun run test:wpt [options]   (node scripts/wpt-batched.mjs)
 
 Runs the curated WPT list against -j workerd engines this script starts,
-kills and restarts every --batch-size tests. Needs \`pnpm run wpt:serve\`
+kills and restarts every --batch-size tests. Needs \`bun run wpt:serve\`
 (or --start-server).
 
 Test selection
@@ -350,7 +350,7 @@ async function waitPortFree(port, deadlineMs = 15000) {
 
 function runPrebuild() {
   const t0 = Date.now();
-  const r = spawnSync("pnpm", ["--filter", "@kitesurf/engine", "run", "prebuild"], {
+  const r = spawnSync("bun", ["--filter", "@kitesurf/engine", "run", "prebuild"], {
     cwd: ROOT,
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -532,7 +532,7 @@ async function startWptServe() {
       return "ignore";
     }
   })();
-  wptChild = spawn("pnpm", ["run", "wpt:serve"], {
+  wptChild = spawn("bun", ["run", "wpt:serve"], {
     cwd: ROOT,
     stdio: ["ignore", logFd, logFd],
     env: process.env,
@@ -714,7 +714,7 @@ function runDiscover() {
   console.log(
     green(`[batched] wrote ${merged.length} tests to ${TESTS_FILE} (+${newOnes.length}).`),
   );
-  console.log(dim(`[batched] next: pnpm run test:wpt --update-expectations  # to baseline.`));
+  console.log(dim(`[batched] next: bun run test:wpt --update-expectations  # to baseline.`));
 }
 
 (async () => {
@@ -752,7 +752,7 @@ function runDiscover() {
       console.error(red(`[batched] Miniflare dist is missing engine-mf.json: ${opts.engineDist}`));
       console.error(
         dim(
-          `[batched] create it with node scripts/wpt-engine.mjs prepare --dist ${opts.engineDist}`,
+          `[batched] create it with bun scripts/wpt-engine.mjs prepare --dist ${opts.engineDist}`,
         ),
       );
       process.exit(2);
@@ -761,7 +761,7 @@ function runDiscover() {
   if (opts.startServer) await startWptServe();
   if (!(await probeWpt(3000))) {
     console.error(red(`[batched] cannot reach ${WPT_BASE}`));
-    console.error(red(`          start it with: pnpm run wpt:serve  (or pass --start-server)`));
+    console.error(red(`          start it with: bun run wpt:serve  (or pass --start-server)`));
     console.error(
       red(`          and set up hosts: cd .wpt && ./wpt make-hosts-file | sudo tee -a /etc/hosts`),
     );

@@ -6,7 +6,7 @@
 // Checks that every non-merge commit in <base>..<head> carries a Developer
 // Certificate of Origin sign-off by its author. See CONTRIBUTING.md and
 // https://developercertificate.org/.
-// Usage: node scripts/check-dco.mjs <base> <head>
+// Usage: bun scripts/check-dco.mjs <base> <head>
 
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -43,7 +43,7 @@ export function parseLog(output) {
 
 function main([base, head]) {
   if (!base || !head) {
-    console.error("usage: node scripts/check-dco.mjs <base> <head>");
+    console.error("usage: bun scripts/check-dco.mjs <base> <head>");
     return 2;
   }
   const output = execFileSync(

@@ -437,7 +437,7 @@ function loadGaps() {
 function readIdl(input) {
   const inputPath = wptPath(input);
   if (!fs.existsSync(inputPath)) {
-    throw new Error(`${input} is missing; run pnpm wpt:setup first`);
+    throw new Error(`${input} is missing; run bun run wpt:setup first`);
   }
   return fs.readFileSync(inputPath, "utf8");
 }
@@ -485,7 +485,7 @@ for (const [output, generated] of outputs) {
   const outputPath = path.join(root, output);
   if (check) {
     if (!fs.existsSync(outputPath) || fs.readFileSync(outputPath, "utf8") !== generated) {
-      console.error(`${output} is stale; run pnpm webidl:generate`);
+      console.error(`${output} is stale; run bun run webidl:generate`);
       stale = true;
     }
   } else {

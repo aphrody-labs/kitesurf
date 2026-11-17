@@ -18,7 +18,7 @@ import {
 import { isMain } from "./wpt-shared.mjs";
 
 const USAGE =
-  "usage: node scripts/pw-gate.mjs --results <results.json>... [--tests <file>] [--expectations <file>] [--junit <file>] [--update-expectations]";
+  "usage: bun scripts/pw-gate.mjs --results <results.json>... [--tests <file>] [--expectations <file>] [--junit <file>] [--update-expectations]";
 const xml = (value) =>
   String(value).replace(
     /[<>&\"']/g,

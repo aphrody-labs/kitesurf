@@ -12,8 +12,8 @@ import { isMain } from "./wpt-shared.mjs";
 const ROOT = resolve(import.meta.dirname, "..");
 const TESTS_FILE = resolve(ROOT, "tests/wpt-tests.json");
 export const BUCKETS_FILE = resolve(ROOT, "tests/wpt-buckets.json");
-const USAGE = `usage: node scripts/wpt-buckets.mjs --durations <wpt full report>... [--budget-ms 35000]
-       node scripts/wpt-buckets.mjs --default-only [--budget-ms 35000] [--check]`;
+const USAGE = `usage: bun scripts/wpt-buckets.mjs --durations <wpt full report>... [--budget-ms 35000]
+       bun scripts/wpt-buckets.mjs --default-only [--budget-ms 35000] [--check]`;
 
 function parseArgs(argv) {
   const options = { durations: [], budgetMs: 35_000, maxTests: 96, engines: 2, defaultMs: 1000 };

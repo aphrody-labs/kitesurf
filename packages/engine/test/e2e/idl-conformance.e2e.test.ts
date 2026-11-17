@@ -3,7 +3,7 @@
 // https://opensource.org/licenses/Apache-2.0
 
 // The generated-IDL ledger rejects both new gaps and stale entries. After an intended change, run
-// this test with `-u`, review `idl-gaps.json`, then run `pnpm webidl:generate`.
+// this test with `-u`, review `idl-gaps.json`, then run `bun run webidl:generate`.
 import { expect, test } from "./harness";
 import { setContent } from "./set-content";
 import { readJsonReport } from "./eval-report";

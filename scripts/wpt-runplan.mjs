@@ -9,7 +9,7 @@ import { dirname, resolve } from "node:path";
 import { isMain } from "./wpt-shared.mjs";
 
 const USAGE =
-  "usage: node scripts/wpt-runplan.mjs --expectations <file> <bucket-tests.json>=<projection.json>...";
+  "usage: bun scripts/wpt-runplan.mjs --expectations <file> <bucket-tests.json>=<projection.json>...";
 export const RUN_OUTCOMES = new Set(["SKIP", "TIMEOUT", "CRASH", "ERROR"]);
 
 /** @param {Record<string, object>} expectations @param {string[]} tests @returns {Record<string, object>} */

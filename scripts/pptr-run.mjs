@@ -53,7 +53,7 @@ const MOCHA = join(PPTR_DIR, "node_modules/mocha/bin/mocha.js");
 const RUNNER_BIN = join(PPTR_DIR, "tools/mocha-runner/bin");
 const REPORTER = resolve(ROOT, "scripts/pptr-reporter.mjs");
 if (!existsSync(join(PPTR_DIR, "test/build/mocha-utils.js")) || !existsSync(MOCHA)) {
-  console.error(`[${TAG}] .puppeteer/ missing or unbuilt — run \`pnpm run pptr:setup\` first`);
+  console.error(`[${TAG}] .puppeteer/ missing or unbuilt — run \`bun run pptr:setup\` first`);
   process.exit(1);
 }
 

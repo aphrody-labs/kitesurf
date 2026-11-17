@@ -90,9 +90,9 @@ function parseArgs(arr) {
     else if (a === "--save-diff") out.saveDiff = arr[++i];
     else if (a === "--tests-file") out.testsFile = arr[++i];
     else if (a === "--help" || a === "-h") {
-      console.log(`Usage: node scripts/wpt-exec.mjs [options]
+      console.log(`Usage: bun scripts/wpt-exec.mjs [options]
 
-INTERNAL per-batch executor. Use \`pnpm run test:wpt\`
+INTERNAL per-batch executor. Use \`bun run test:wpt\`
 (scripts/wpt-batched.mjs) — it owns the test list, the engine, the
 report and the expectations rebaseline.
 
@@ -1011,7 +1011,7 @@ async function main() {
   for (const engine of ENGINES) {
     if (!(await probeKitesurf(engine, 3000))) {
       console.error(red(`[wpt-exec] cannot reach kitesurf health at ${engine.healthUrl}`));
-      console.error(red(`         start it with: pnpm run dev`));
+      console.error(red(`         start it with: bun run dev`));
       console.error(red(`         (or wait — workerd may be restarting after a crash)`));
       process.exit(2);
     }

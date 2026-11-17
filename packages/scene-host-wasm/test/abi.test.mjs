@@ -22,7 +22,7 @@ async function readRequiredFile(path, description) {
     return await readFile(path);
   } catch (error) {
     if (error?.code === "ENOENT") {
-      throw new Error(`Missing ${description} at ${path}; run \`pnpm run build\` first.`);
+      throw new Error(`Missing ${description} at ${path}; run \`bun run build\` first.`);
     }
     throw error;
   }
@@ -32,7 +32,7 @@ const manifestBytes = await readRequiredFile(manifestPath, "scene-host manifest"
 const manifest = JSON.parse(manifestBytes.toString("utf8"));
 const wireVersion = manifest?.wireVersion;
 if (!Number.isInteger(wireVersion) || wireVersion < 0 || wireVersion > 0xffff_ffff) {
-  throw new Error(`Invalid wireVersion in ${manifestPath}; run \`pnpm run build\` first.`);
+  throw new Error(`Invalid wireVersion in ${manifestPath}; run \`bun run build\` first.`);
 }
 const wasmModule = await WebAssembly.compile(
   await readRequiredFile(wasmPath, "staged scene-host Wasm artifact"),

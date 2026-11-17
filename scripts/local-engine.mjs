@@ -86,7 +86,7 @@ export function localEngines({ tag, launcher, dist, outDir, firstPort, skipBuild
     if (process.env[skipBuildEnv] === "1" || launcher === "miniflare") return;
     const wasm = resolve(ROOT, "packages/core/pkg/kitesurf_core_bg.wasm");
     if (!existsSync(wasm))
-      throw new Error(`core wasm not built — run \`pnpm run build\` first (or ${skipBuildEnv}=1)`);
+      throw new Error(`core wasm not built — run \`bun run build\` first (or ${skipBuildEnv}=1)`);
     for (const pkg of [
       "packages/dom-shim",
       "packages/page-script",

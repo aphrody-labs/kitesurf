@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 // https://opensource.org/licenses/Apache-2.0
 
-// `bazel run //packages/engine:deploy -- [--preview] <wrangler args>` (`pnpm run deploy`): uploads
+// `bazel run //packages/engine:deploy -- [--preview] <wrangler args>` (`bun run deploy`): uploads
 // the Bazel-built engine to wrangler's account; --preview runs `wrangler versions upload` instead.
 // :dist is already bundled, so wrangler uploads it unbundled beside a copy of the assets and a
 // flattened copy of the public config.

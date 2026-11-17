@@ -16,8 +16,8 @@ export const DEFAULT_DIST = resolve(ENGINE_DIR, ".wpt-dist");
 const OPTIONS_FILE = "engine-mf.json";
 const fromEngine = createRequire(resolve(ENGINE_DIR, "package.json"));
 const engineDep = (name) => import(pathToFileURL(fromEngine.resolve(name)).href);
-const USAGE = `usage: node scripts/wpt-engine.mjs prepare [--dist <dir>] [--config <file>]
-       node scripts/wpt-engine.mjs serve --port <n> [--dist <dir>] [--assets <dir>]
+const USAGE = `usage: bun scripts/wpt-engine.mjs prepare [--dist <dir>] [--config <file>]
+       bun scripts/wpt-engine.mjs serve --port <n> [--dist <dir>] [--assets <dir>]
                                   [--inspector-port <n>] [--var KEY:VALUE]...`;
 
 const ENGINE_RULES = [

@@ -40,7 +40,7 @@ if (process.env.KITESURF_REUSE_WASM && !postprocessWasm) {
 }
 
 if (!postprocessWasm) {
-  execSync("node scripts/get-patched-vendor-crates.mjs", {
+  execSync("bun scripts/get-patched-vendor-crates.mjs", {
     cwd: REPO_ROOT,
     stdio: "inherit",
   });

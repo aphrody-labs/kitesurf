@@ -12,7 +12,7 @@ import { dirname, resolve, sep } from "node:path";
 
 // Bazel supplies the engine directory in its bin tree, including the external repository prefix.
 // Resolve Vitest and its inputs from that same tree so it is loaded only once.
-const USAGE = `usage: node scripts/e2e-shard.mjs --engine-dist <dir> --fixtures-dist <dir> --out-dir <dir>
+const USAGE = `usage: bun scripts/e2e-shard.mjs --engine-dist <dir> --fixtures-dist <dir> --out-dir <dir>
        [--engine-dir <dir>] [--max-workers <n>] [--max-wall-ms <ms>] <test file>...`;
 
 function parseArgs(argv) {

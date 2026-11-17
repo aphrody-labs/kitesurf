@@ -3,32 +3,31 @@
   "private": true,
   "version": "0.0.1",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@9.15.4",
   "scripts": {
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "format": "bazel run //scripts:lint -- format --write",
     "format:check": "bazel run //scripts:lint -- format --check",
-    "format:rust": "node scripts/format-rust.mjs",
-    "lint": "pnpm run lint:js && pnpm run lint:rust",
+    "format:rust": "bun scripts/format-rust.mjs",
+    "lint": "bun run lint:js && bun run lint:rust",
     "lint:js": "bazel run //scripts:lint -- lint:js",
     "lint:complexity": "bazel run //scripts:lint_complexity",
     "lint:rust": "bazel test //:rust_lint",
     "lint:test": "bazel test //scripts:lint_test",
-    "dev": "pnpm --filter @kitesurf/engine dev",
-    "dev:memprof": "pnpm --filter @kitesurf/engine dev:memprof",
+    "dev": "bun --filter @kitesurf/engine dev",
+    "dev:memprof": "bun --filter @kitesurf/engine dev:memprof",
     "dev:tracing": "docker compose -f docker/compose.dev.yml up tracing",
-    "dev:wpt": "pnpm --filter @kitesurf/engine dev:wpt",
-    "bench:scene": "node scripts/bench-scene-record.mjs",
+    "dev:wpt": "bun --filter @kitesurf/engine dev:wpt",
+    "bench:scene": "bun scripts/bench-scene-record.mjs",
     "build": "bazel run //packages/engine:dev_build",
     "build:dist": "bazel build //packages/engine:dist",
-    "build:wasm:memprof": "bazel run //packages/engine:dev_build && bazel run //packages/core/pkg:stage_memprof && KITESURF_MEMPROF=1 pnpm --dir packages/page-script run build",
+    "build:wasm:memprof": "bazel run //packages/engine:dev_build && bazel run //packages/core/pkg:stage_memprof && KITESURF_MEMPROF=1 bun --cwd packages/page-script run build",
     "deploy": "bazel run --config=devtools //packages/engine:deploy --",
     "deploy:preview": "bazel run --config=devtools //packages/engine:deploy -- --preview",
-    "webidl:generate": "node scripts/generate-webidl-bindings.mjs",
+    "webidl:generate": "bun scripts/generate-webidl-bindings.mjs",
     "webidl:check": "bazel test //scripts:webidl_check",
     "script-gate:test": "bazel test //packages/script-gate:test",
-    "vendor:apply": "node scripts/get-patched-vendor-crates.mjs",
-    "vendor:regen": "node scripts/regen-vendor-patches.mjs",
+    "vendor:apply": "bun scripts/get-patched-vendor-crates.mjs",
+    "vendor:regen": "bun scripts/regen-vendor-patches.mjs",
     "check": "bazel test //:check && bazel run //scripts:workspace_checks",
     "types:lint": "tsc -p scripts/lint/tsconfig.json",
     "test:vitest": "bazel test //packages/engine:vitest",
@@ -37,16 +36,16 @@
     "test:script-helpers": "bazel test //scripts:helpers_test",
     "test:e2e": "bazel run //packages/engine:e2e --",
     "test:e2e:all": "bazel test //tests/e2e:gate",
-    "test:wpt": "node scripts/wpt-batched.mjs",
-    "test:wpt:ci": "node scripts/wpt-batched.mjs --start-server",
-    "test:wpt:fast": "node scripts/wpt-batched.mjs --skip-expected-timeouts --skip-expected-crashes --skip-slow",
-    "test:playwright": "node scripts/pw-run.mjs",
-    "pw:setup": "node scripts/pw-setup.mjs",
-    "test:puppeteer": "node scripts/pptr-run.mjs",
-    "pptr:setup": "node scripts/pptr-setup.mjs",
-    "wpt:setup": "node scripts/wpt-setup.mjs",
-    "wpt:serve": "node scripts/wpt-serve.mjs",
-    "wpt:inventory": "node scripts/wpt-inventory.mjs"
+    "test:wpt": "bun scripts/wpt-batched.mjs",
+    "test:wpt:ci": "bun scripts/wpt-batched.mjs --start-server",
+    "test:wpt:fast": "bun scripts/wpt-batched.mjs --skip-expected-timeouts --skip-expected-crashes --skip-slow",
+    "test:playwright": "bun scripts/pw-run.mjs",
+    "pw:setup": "bun scripts/pw-setup.mjs",
+    "test:puppeteer": "bun scripts/pptr-run.mjs",
+    "pptr:setup": "bun scripts/pptr-setup.mjs",
+    "wpt:setup": "bun scripts/wpt-setup.mjs",
+    "wpt:serve": "bun scripts/wpt-serve.mjs",
+    "wpt:inventory": "bun scripts/wpt-inventory.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",
@@ -69,5 +68,20 @@
       "undici@>=7.0.0 <7.30.1": "^7.30.1",
       "zod@>=4.0.0 <4.6.6": "^4.6.6"
     }
-  }
+  },
+  "overrides": {
+    "@cloudflare/puppeteer>devtools-protocol": "0.0.1669207",
+    "sharp@>=0.35.0 <0.35.5": "^0.35.5",
+    "undici@>=7.0.0 <7.30.1": "^7.30.1",
+    "zod@>=4.0.0 <4.6.6": "^4.6.6"
+  },
+  "workspaces": [
+    "packages/*",
+    "packages/core/pkg"
+  ],
+  "trustedDependencies": [
+    "esbuild",
+    "sharp",
+    "workerd"
+  ]
 }

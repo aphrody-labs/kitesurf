@@ -10,7 +10,7 @@ import os from "node:os";
 import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const USAGE = `usage: node scripts/pw-html-report.mjs --runs <dir> --out <dir> [--pw-base <directory>]
+const USAGE = `usage: bun scripts/pw-html-report.mjs --runs <dir> --out <dir> [--pw-base <directory>]
 --runs holds one directory per spec action, each with test-results/blob/*.zip, as tests/pw writes them.
 --pw-base defaults to KITESURF_PW_BASE or .playwright. The checkout must be built by pw:setup.`;
 
@@ -50,7 +50,7 @@ function collectBlobs(runs, directory) {
 
 function main(options) {
   const cli = resolve(options.base, "packages/playwright/cli.js");
-  if (!existsSync(cli)) fail(`${options.base} is not built; run pnpm run pw:setup`);
+  if (!existsSync(cli)) fail(`${options.base} is not built; run bun run pw:setup`);
   const directory = mkdtempSync(join(os.tmpdir(), "pw-blobs-"));
   const count = collectBlobs(options.runs, directory);
   if (count === 0) fail(`no blob reports under ${options.runs}`);

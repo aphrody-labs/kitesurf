@@ -118,8 +118,8 @@ async function waitForServer(timeoutMs) {
 }
 
 function startDevServer() {
-  console.log(dim(`[e2e-perf] starting workerd via 'pnpm --filter @kitesurf/engine dev'…`));
-  const proc = spawn("pnpm", ["--filter", "@kitesurf/engine", "dev"], {
+  console.log(dim(`[e2e-perf] starting workerd via 'bun --filter @kitesurf/engine dev'…`));
+  const proc = spawn("bun", ["--filter", "@kitesurf/engine", "dev"], {
     cwd: ROOT,
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,

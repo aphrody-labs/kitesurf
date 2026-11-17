@@ -40,7 +40,7 @@ export function checkoutProblem(base) {
   if (!tag || tag !== `puppeteer-v${version}`)
     return `Puppeteer checkout at ${base} is ${version || "missing"}, setup pins ${tag}`;
   for (const built of ["test/build/mocha-utils.js", "tools/mocha-runner/bin/interface.js"])
-    if (!existsSync(resolve(base, built))) return `${base} is not built; run pnpm run pptr:setup`;
+    if (!existsSync(resolve(base, built))) return `${base} is not built; run bun run pptr:setup`;
   return null;
 }
 

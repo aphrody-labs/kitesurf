@@ -71,4 +71,4 @@ for (const workspace of ["@puppeteer-test/test", "@puppeteer/mocha-runner"]) {
 
 const seconds = ((Date.now() - started) / 1000).toFixed(0);
 console.log(`[pptr-setup] done in ${seconds}s — puppeteer ${PPTR_TAG} ready in .puppeteer/`);
-console.log("[pptr-setup] next: pnpm run test:puppeteer");
+console.log("[pptr-setup] next: bun run test:puppeteer");

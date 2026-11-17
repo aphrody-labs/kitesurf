@@ -43,7 +43,7 @@ function memprofBanner() {
   if (!existsSync(MANIFEST_PATH)) {
     throw new Error(
       `KITESURF_MEMPROF=1 but manifest missing at ${MANIFEST_PATH}. ` +
-        `Run \`pnpm run dev:memprof\`, which builds it first.`,
+        `Run \`bun run dev:memprof\`, which builds it first.`,
     );
   }
   const manifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));

@@ -8,7 +8,7 @@ const args = process.argv.slice(2);
 const mode = args.find((a) => a === "--chrome" || a === "--kitesurf");
 const url = args.find((a) => !a.startsWith("--"));
 if (!mode || !url) {
-  console.error("usage: node scripts/ax-dump.mjs --chrome|--kitesurf <url>");
+  console.error("usage: bun scripts/ax-dump.mjs --chrome|--kitesurf <url>");
   process.exit(1);
 }
 

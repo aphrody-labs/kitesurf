@@ -277,7 +277,7 @@ export class OtlpExporter {
       console.warn(
         `[local-trace] OTLP export failed (further failures silent): ${
           err instanceof Error ? err.message : String(err)
-        } — is the collector up? (pnpm dev:tracing)`,
+        } — is the collector up? (bun run dev:tracing)`,
       );
     }
   }

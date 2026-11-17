@@ -11,7 +11,7 @@ import { checkoutBase, checkoutProblem, overlay } from "./pptr-checkout.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const PATCH_DIR = resolve(ROOT, "scripts/patches/puppeteer");
-const USAGE = `usage: node scripts/pptr-build.mjs --out-dir <dir> [--pptr-base <directory>]
+const USAGE = `usage: bun scripts/pptr-build.mjs --out-dir <dir> [--pptr-base <directory>]
 --pptr-base defaults to KITESURF_PPTR_BASE or .puppeteer. The checkout must be built by
 pptr:setup, without its patches. The output is its patched, built test/ without node_modules.`;
 

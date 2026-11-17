@@ -67,4 +67,4 @@ console.log("[pw-setup] npm run build (playwright-core + test runner)");
 run("npm", ["run", "build"], { cwd: PW_DIR });
 
 console.log(`[pw-setup] done — playwright ${PW_TAG} ready in .playwright/`);
-console.log("[pw-setup] next: pnpm run test:playwright");
+console.log("[pw-setup] next: bun run test:playwright");

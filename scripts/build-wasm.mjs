@@ -50,7 +50,7 @@ const reuseWasm = Boolean(process.env.KITESURF_REUSE_WASM);
 // only the post-passes run, with the tools named by WASM_BINDGEN_BIN/WASM_OPT_BIN.
 const memprof = process.argv.includes("--memprof");
 if (process.env.KITESURF_MEMPROF && !memprof) {
-  console.error("[build-wasm] use `pnpm run build:wasm:memprof` for the Bazel memprof build");
+  console.error("[build-wasm] use `bun run build:wasm:memprof` for the Bazel memprof build");
   process.exit(2);
 }
 if (memprof && !postprocessWasm) {
