@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bpereira <bpereira@cloudflare.com>
+Date: Tue, 17 Nov 2026 17:56:16 +0000
+Subject: [PATCH] Insert a shadow root's sheets in tree order
+
+add_stylesheet_for_node appended every shadow-scoped sheet to the root's
+set, on the assumption that sheets arrive in tree order. They arrive in the
+mutator's hash-set order, so moving two <style> elements in one flush, as
+reordering a shadow root's adopted sheets does, left the cascade in whatever
+order the hash set drained. Insert each sheet before the next sheet in tree
+order that the root already holds.
+
+Signed-off-by: bpereira <bpereira@cloudflare.com>
+---
+ src/document.rs | 56 ++++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 48 insertions(+), 8 deletions(-)
+
+diff --git a/src/document.rs b/src/document.rs
+index 8aee2c2..04c4910 100644
+--- a/src/document.rs
++++ b/src/document.rs
+@@ -1943,15 +1943,27 @@ impl BaseDocument {
+         element.set_special_data(SpecialElementData::Stylesheet(stylesheet.clone()));
+
+         if let Some(shadow_root_id) = shadow_scope {
+-            // Appends arrive in tree order (process_added_subtree is a
+-            // pre-order walk), which preserves document order per root.
++            // Sheets reach here in hash-set order, not tree order, so place each one before the
++            // next sheet in tree order that the root already holds: moving two <style> elements
++            // in one flush must still reorder the cascade.
++            let before = self.next_shadow_sheet_in_tree_order(shadow_root_id, node_id);
+             if let NodeData::ShadowRoot(ref mut data) = self.nodes[shadow_root_id].data {
+-                data.author_styles.stylesheets.append_stylesheet(
+-                    None,
+-                    &Default::default(),
+-                    stylesheet,
+-                    &self.guard.read(),
+-                );
++                let guard = self.guard.read();
++                match before {
++                    Some(before) => data.author_styles.stylesheets.insert_stylesheet_before(
++                        None,
++                        &Default::default(),
++                        stylesheet,
++                        before,
++                        &guard,
++                    ),
++                    None => data.author_styles.stylesheets.append_stylesheet(
++                        None,
++                        &Default::default(),
++                        stylesheet,
++                        &guard,
++                    ),
++                }
+             }
+             self.note_shadow_style_change(shadow_root_id);
+             return;
+@@ -1978,6 +1990,34 @@ impl BaseDocument {
+         }
+     }
+
++    /// The first sheet after `node_id` in the shadow tree's order that `shadow_root_id`'s scoped
++    /// set already holds, which is where `node_id`'s sheet belongs.
++    fn next_shadow_sheet_in_tree_order(
++        &self,
++        shadow_root_id: NodeId,
++        node_id: NodeId,
++    ) -> Option<DocumentStyleSheet> {
++        let NodeData::ShadowRoot(ref data) = self.nodes[shadow_root_id].data else {
++            return None;
++        };
++        let held = &data.author_styles.stylesheets;
++        let mut past_node = false;
++        let mut stack: Vec<NodeId> = self.nodes[shadow_root_id].children().iter().rev().collect();
++        while let Some(id) = stack.pop() {
++            if id == node_id {
++                past_node = true;
++            } else if past_node {
++                if let Some((sheet, Some(scope))) = self.nodes_to_stylesheet.get(&id) {
++                    if *scope == shadow_root_id && held.iter().any(|s| s == sheet) {
++                        return Some(sheet.clone());
++                    }
++                }
++            }
++            stack.extend(self.nodes[id].children().iter().rev());
++        }
++        None
++    }
++
+     /// Remove a sheet from a shadow root's scoped set (no-op when the
+     /// sheet was never registered there).
+     pub(crate) fn remove_shadow_stylesheet(
