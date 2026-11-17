@@ -27,4 +27,18 @@ while IFS= read -r test; do
   retry+=("--//tests/wpt:retry_test=$test")
 done < <(node -e 'for (const test of require(process.argv[1])) console.log(test)' "$out/retry.json")
 
-bazel test "$@" --test_output=errors "${retry[@]}" //tests/wpt:expectations_test
+status=0
+bazel test "$@" --test_output=errors --nozip_undeclared_test_outputs "${retry[@]}" \
+  //tests/wpt:expectations_test || status=$?
+
+# The gate writes these into its undeclared test outputs; GitHub shows them on the run and the PR.
+gate="$(bazel info "$@" "${quiet[@]}" bazel-testlogs)/scripts/wpt_expectations_test/test.outputs"
+if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
+  if [[ -f $gate/summary.md ]]; then
+    cat "$gate/summary.md" >>"$GITHUB_STEP_SUMMARY"
+  else
+    echo "## WPT expectations gate: no results; see the job log." >>"$GITHUB_STEP_SUMMARY"
+  fi
+fi
+if [[ ${GITHUB_ACTIONS:-} == true && -f $gate/annotations.txt ]]; then cat "$gate/annotations.txt"; fi
+exit "$status"
