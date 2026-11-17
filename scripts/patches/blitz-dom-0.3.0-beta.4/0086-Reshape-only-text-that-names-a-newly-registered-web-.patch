@@ -192,10 +192,10 @@ index dda2ad1..086a9e2 100644
          let scale = self.viewport.scale();
 
 diff --git a/src/resolve.rs b/src/resolve.rs
-index 904b7ad..f36b249 100644
+index cf14928..2b97ab1 100644
 --- a/src/resolve.rs
 +++ b/src/resolve.rs
-@@ -210,6 +210,7 @@ impl BaseDocument {
+@@ -213,6 +213,7 @@ impl BaseDocument {
          // Apply any device changes (viewport resize, zoom, color-scheme, etc)
          // accumulated since the last resolve as a single device rebuild.
          self.flush_pending_device_changes();

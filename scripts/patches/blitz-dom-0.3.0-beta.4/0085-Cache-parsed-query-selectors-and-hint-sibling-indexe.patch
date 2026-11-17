@@ -158,10 +158,10 @@ index e010772..2e23815 100644
 
      // Namespace-aware variant for CSSOM selectorText writes: a rule in a
 diff --git a/src/stylo.rs b/src/stylo.rs
-index ba78c26..f55ffd9 100644
+index 832028b..4bc7dd1 100644
 --- a/src/stylo.rs
 +++ b/src/stylo.rs
-@@ -670,30 +670,28 @@ impl selectors::Element for BlitzNode<'_> {
+@@ -650,30 +650,28 @@ impl selectors::Element for BlitzNode<'_> {
          matches!(self.data, NodeData::AnonymousBlock(_))
      }
 

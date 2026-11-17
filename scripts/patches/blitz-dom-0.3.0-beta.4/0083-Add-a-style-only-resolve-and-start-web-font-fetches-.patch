@@ -1,21 +1,19 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: bpereira <bpereira@cloudflare.com>
 Date: Mon, 2 Nov 2026 12:10:49 +0000
-Subject: [PATCH] Add a style-only resolve for computed-value readers
+Subject: [PATCH] Add a style-only resolve and start web-font fetches from it
 
-getComputedStyle reads of a single longhand never look at a box, yet every read after a
-mutation paid for counters, box construction, layout and the paint tree. resolve_style runs
-the inputs the cascade needs and the stylist, and leaves restyle damage on the nodes for the
-next full resolve. It reports false when a query container exists, because @container rules
-cascade against laid-out sizes, so the caller lays out instead.
+A computed-value reader needs resolved styles but no box tree, and re-resolving layout for one
+answer costs a whole pass over the document. Add a resolve that restyles and stops before layout,
+and answer the computed-value reads from it.
 
-Whether a query container exists is a sticky flag that the style traversal and the
-full-resolve container snapshot set, so a style-only read does not scan every node for one.
+A style-only pass also sees a font face it has never registered. Start the fetch there so the font
+is in flight while the box tree is being built, rather than after the first layout that needs it.
 ---
  src/document.rs |  4 ++++
- src/resolve.rs  | 37 +++++++++++++++++++++++++++++++++++++
+ src/resolve.rs  | 40 ++++++++++++++++++++++++++++++++++++++++
  src/stylo.rs    | 23 ++++++++++++++++++++++-
- 3 files changed, 63 insertions(+), 1 deletion(-)
+ 3 files changed, 66 insertions(+), 1 deletion(-)
 
 diff --git a/src/document.rs b/src/document.rs
 index 5f57b00..1ce0a0b 100644
@@ -40,10 +38,10 @@ index 5f57b00..1ce0a0b 100644
              pending_style_nodes: HashSet::new(),
              author_sheet_keys: HashMap::new(),
 diff --git a/src/resolve.rs b/src/resolve.rs
-index a7c33ff..904b7ad 100644
+index a7c33ff..cf14928 100644
 --- a/src/resolve.rs
 +++ b/src/resolve.rs
-@@ -129,6 +129,42 @@ impl BaseDocument {
+@@ -129,6 +129,45 @@ impl BaseDocument {
          }
      }
 
@@ -65,6 +63,9 @@ index a7c33ff..904b7ad 100644
 +        self.flush_pending_device_changes();
 +        self.flush_slot_assignments();
 +        self.resolve_stylist(current_time_for_animations);
++        // Start web-font fetches from styles alone, as browsers do, so a caller can wait for the
++        // faces before the first layout instead of shaping every paragraph twice.
++        self.flush_needed_font_faces();
 +        !self.size_container_seen
 +    }
 +
@@ -86,7 +87,7 @@ index a7c33ff..904b7ad 100644
      /// Restyle the tree and then relayout it
      pub fn resolve(&mut self, current_time_for_animations: f64) {
          if TDocument::as_node(&self.root_node())
-@@ -202,6 +238,7 @@ impl BaseDocument {
+@@ -202,6 +241,7 @@ impl BaseDocument {
          // Snapshot the sizes it styles against, so the pass after layout can
          // spot the containers whose answer is now stale.
          let container_sizes_before = container_sizes(self);
