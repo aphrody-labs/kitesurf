@@ -528,6 +528,27 @@ function layoutMetricsResponse(
   };
 }
 
+/** Per-axis paint cap, mirrored from MAX_SCENE_CLIP_DIMENSION_PX and paint/render.rs. */
+const MAX_DOCUMENT_CLIP_PX = 2_560;
+
+async function documentClip(
+  ctx: DispatchCtx,
+  target: TargetState,
+  warnIfCapped: boolean,
+): Promise<Protocol.Page.Viewport | undefined> {
+  const metrics = await sessionOf(ctx, target).callIfLive.layoutMetrics({});
+  if (!metrics || !(metrics.contentWidth > 0) || !(metrics.contentHeight > 0)) return undefined;
+  const width = Math.min(MAX_DOCUMENT_CLIP_PX, metrics.contentWidth);
+  const height = Math.min(MAX_DOCUMENT_CLIP_PX, metrics.contentHeight);
+  if (warnIfCapped && (width !== metrics.contentWidth || height !== metrics.contentHeight)) {
+    console.warn(
+      `[screenshot] full-page capture capped at ${MAX_DOCUMENT_CLIP_PX}px: ` +
+        `content is ${metrics.contentWidth}x${metrics.contentHeight}`,
+    );
+  }
+  return { x: 0, y: 0, width, height, scale: 1 };
+}
+
 type InternalHistoryNavigateRequest = Omit<
   Extract<CdpRequest, { method: "Page.navigate" }>,
   "params"
@@ -1214,10 +1235,16 @@ export async function handlePage(
             ? reqQuality
             : DEFAULT_IMAGE_QUALITY;
         const omitBackground = req.params?.omitBackground === true;
-        const clip = req.params?.clip;
+        let clip = req.params?.clip;
+        // Chrome captures the whole document for captureBeyondViewport without a clip, and
+        // Puppeteer's fullPage relies on it.
+        const fullDocument = !clip && req.params?.captureBeyondViewport === true;
 
         const pageUrl = target.url || "https://kitesurf.local/";
         if (target.pageScript) {
+          // The drain can land resources that grow the document, so this measurement only scopes
+          // the drain; the clip is measured again before the render.
+          if (fullDocument) clip = await documentClip(ctx, target, false);
           const ps = target.pageScript;
           const __drainStart = Date.now();
           let drainInfo: Record<string, unknown> | null = null;
@@ -1270,6 +1297,7 @@ export async function handlePage(
             target,
             __drainStart + RENDER_DRAIN_TIMEOUT_MS + RENDER_DRAIN_GRACE_MS - Date.now(),
           );
+          if (fullDocument) clip = (await documentClip(ctx, target, true)) ?? clip;
           const __rpcStart = Date.now();
           const viaRenderer = await renderViaPageRenderer(ctx, target, {
             format,
