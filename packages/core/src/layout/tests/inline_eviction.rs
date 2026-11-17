@@ -355,32 +355,60 @@ fn width_changes_lay_out_evicted_roots_without_reshaping() {
 }
 
 /// A restyle that changes how text breaks must rebuild an evicted root rather than lay it out from
-/// the summary it took under the old style.
+/// the summary it took under the old style. Wrapping, and an inline span's padding and border, are
+/// baked into the parley layout when it is built.
 #[test]
 fn restyling_an_evicted_paragraph_lays_out_the_new_style() {
     let (keep, evict) = with_and_without_eviction(&page(120));
-    let far = evicted_count(evict.doc.borrow().as_ref());
-    assert!(
-        far > 60,
-        "precondition: most of the page is evicted ({far})"
-    );
-
-    for dom in [&keep, &evict] {
-        let p = dom.query_selector("#p60").unwrap() as u32;
-        assert!(dom.set_attribute(p, "style", "white-space: nowrap"));
+    for id in ["p60", "p64", "p72"] {
+        assert!(is_evicted(&evict, id), "precondition: {id} is evicted");
     }
-    keep.resolve_layout();
-    evict.resolve_layout();
+
+    let restyle = |dom: &DomHandle| {
+        let rect =
+            |selector: &str| dom.test_bounding_rect(dom.query_selector(selector).unwrap() as u32);
+        let before = [rect("#p60"), rect("#p64 em"), rect("#p72 em")];
+        for (selector, style) in [
+            ("#p60", "white-space: nowrap"),
+            ("#p64 em", "padding: 0 200px"),
+            ("#p72 em", "border: 6px solid red"),
+        ] {
+            let id = dom.query_selector(selector).unwrap() as u32;
+            assert!(dom.set_attribute(id, "style", style));
+        }
+        dom.resolve_layout();
+        let after = [rect("#p60"), rect("#p64 em"), rect("#p72 em")];
+        assert!(
+            after[0].3 < before[0].3,
+            "nowrap is one line: {:?} -> {:?}",
+            before[0],
+            after[0]
+        );
+        assert!(
+            after[1].2 > before[1].2,
+            "padding widens the span: {:?} -> {:?}",
+            before[1],
+            after[1]
+        );
+        assert!(
+            after[2].2 > before[2].2,
+            "border widens the span: {:?} -> {:?}",
+            before[2],
+            after[2]
+        );
+        after
+    };
+    assert_eq!(restyle(&keep), restyle(&evict));
 
     assert_eq!(
         geometry(keep.doc.borrow().as_ref()),
         geometry(evict.doc.borrow().as_ref()),
-        "an evicted root restyled to nowrap kept its old breaks"
+        "a restyled evicted root kept its old breaks"
     );
     assert_eq!(
         boxes(keep.doc.borrow().as_ref()),
         boxes(evict.doc.borrow().as_ref()),
-        "an evicted root restyled to nowrap built different boxes"
+        "a restyled evicted root built different boxes"
     );
 }
 
