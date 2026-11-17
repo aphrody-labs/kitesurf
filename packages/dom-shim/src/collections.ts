@@ -3174,6 +3174,7 @@ interface CSSStyleSheetBackend {
   replace(text: unknown): Promise<Idl.CSSStyleSheet>;
   attachMirror?(styleEl: Element): void;
   detachMirror?(styleEl: Element): void;
+  rerenderMirrors?(): void;
 }
 interface SheetRecord {
   fields: StyleSheetFields;
@@ -3256,7 +3257,9 @@ class StyleSheetCls implements Idl.StyleSheet {
     return styleSheetFields(this).disabled;
   }
   set disabled(v: boolean) {
-    styleSheetFields(this).disabled = !!v;
+    const record = sheetRecord(this);
+    record.fields.disabled = !!v;
+    record.backend.rerenderMirrors?.();
   }
 }
 
@@ -3267,8 +3270,11 @@ class CSSStyleSheetCtor extends StyleSheetCls implements Idl.CSSStyleSheet {
     super(STYLE_SHEET_TOKEN);
     const rules = makeRuleList([]);
     const mirrors = new Set<Element>();
+    // A disabled sheet stays adopted but contributes no rules to the cascade.
+    const mirrorText = () =>
+      sheetRecords.get(this)?.fields.disabled ? "" : rules.map((r) => r.cssText).join("\n");
     const rerender = () => {
-      const text = rules.map((r) => r.cssText).join("\n");
+      const text = mirrorText();
       for (const styleEl of mirrors) {
         try {
           styleEl.textContent = text;
@@ -3328,12 +3334,13 @@ class CSSStyleSheetCtor extends StyleSheetCls implements Idl.CSSStyleSheet {
         mirrors.add(styleEl);
         // Push the current rules now so the cascade sees them on the next paint.
         try {
-          styleEl.textContent = rules.map((r) => r.cssText).join("\n");
+          styleEl.textContent = mirrorText();
         } catch {}
       },
       detachMirror(styleEl) {
         mirrors.delete(styleEl);
       },
+      rerenderMirrors: rerender,
     };
     sheetRecords.set(this, {
       fields: {
