@@ -3477,23 +3477,30 @@ export class PageScript extends WorkerEntrypoint implements PageScriptSession {
             scrollToFragment(newUrl);
           }
           if (previous !== newUrl || kind === "navigate") {
-            try {
-              const navigationType =
-                kind === "hash"
-                  ? "fragment"
-                  : kind === "pushState" || kind === "replaceState"
-                    ? "historyApi"
-                    : "other";
-              sendUpstreamEvent({
-                event: "kitesurf.navigatedWithinDocument",
-                params: {
-                  url: newUrl,
-                  navigationType,
-                  kind,
-                  previousUrl: previous,
-                },
-              });
-            } catch {}
+            const navigationType =
+              kind === "hash"
+                ? "fragment"
+                : kind === "pushState" || kind === "replaceState"
+                  ? "historyApi"
+                  : "other";
+            const report = () => {
+              try {
+                sendUpstreamEvent({
+                  event: "kitesurf.navigatedWithinDocument",
+                  params: {
+                    url: newUrl,
+                    navigationType,
+                    kind,
+                    previousUrl: previous,
+                  },
+                });
+              } catch {}
+            };
+            // A cross-document navigation retires this isolate once the new page is fetched.
+            // Report it after the running script returns, as Chrome does, so the reply to the
+            // evaluate that set the location is sent before the engine starts the navigation.
+            if (kind === "navigate") nativeSetTimeout(report, 0);
+            else report();
           }
         },
         getRectByAuthId: (authId: number) => {
