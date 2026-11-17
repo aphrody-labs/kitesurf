@@ -15,7 +15,7 @@ import {
 import { KITESURF_NOSNIFF_HEADER } from "@kitesurf/script-gate/gateway-headers";
 import type { ParentScriptDescriptor, ScannedModulePreload } from "../wasm.ts";
 import type { SandboxOutboundOverride } from "./outbound.ts";
-import { scriptCredentialsMode } from "./cors.ts";
+import { isCorsExemptUrl, scriptCredentialsMode } from "./cors.ts";
 import { localTraceParentProps } from "../tracing-local.ts";
 import { htmlTagSpans } from "./html-tag-spans.ts";
 import { walkRedirects } from "./redirect-walk.ts";
@@ -1386,7 +1386,7 @@ export async function walkModuleGraph({
       };
       if (connectionId) headers["x-kitesurf-connection-id"] = connectionId;
       if (mainFrameId) headers["x-kitesurf-frame-id"] = mainFrameId;
-      if (pageOrigin) headers["origin"] = pageOrigin;
+      if (pageOrigin && !isCorsExemptUrl(fetchUrl)) headers["origin"] = pageOrigin;
       const walk = await walkRedirects({
         url: fetchUrl,
         signal: ctrl.signal,
