@@ -2447,6 +2447,20 @@ function normalizeProperty(name: unknown): string {
 }
 
 const supportedPropertyCache = new Map<string, boolean>();
+// A value reified from one property cannot be written to another (css-typed-om "create an
+// internal representation").
+function assertValuesBelongTo(property: string, values: Array<CSSStyleValue | string>) {
+  for (const value of values) {
+    if (
+      value instanceof CSSStyleValue &&
+      value._associatedProperty &&
+      value._associatedProperty !== property
+    ) {
+      throw new TypeError("CSSStyleValue is associated with another property");
+    }
+  }
+}
+
 function assertSupportedProperty(property: string) {
   if (property.startsWith("--")) return;
   let supported = supportedPropertyCache.get(property);
@@ -2752,15 +2766,7 @@ export class StylePropertyMap extends StylePropertyMapReadOnly implements Idl.St
     ) {
       throw new TypeError("Expected one CSSStyleValue or string");
     }
-    for (const value of values) {
-      if (
-        value instanceof CSSStyleValue &&
-        value._associatedProperty &&
-        value._associatedProperty !== property
-      ) {
-        throw new TypeError("CSSStyleValue is associated with another property");
-      }
-    }
+    assertValuesBelongTo(property, values);
     const value = values.length === 1 ? values[0] : values.map(String).join(", ");
     if (
       values.length > 1 &&
@@ -2860,6 +2866,7 @@ export class StylePropertyMap extends StylePropertyMapReadOnly implements Idl.St
     ) {
       throw new TypeError("Property does not accept multiple values");
     }
+    assertValuesBelongTo(property, values);
     const current = this._declaration().getPropertyValue(property);
     const shorthand = property.startsWith("transition-")
       ? this._declaration().getPropertyValue("transition")
