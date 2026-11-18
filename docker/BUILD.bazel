@@ -1,4 +1,5 @@
 load("@aspect_rules_js//js:defs.bzl", "js_run_binary")
+load("//bazel:checks.bzl", "workspace_configs")
 load("//bazel:paths.bzl", "bin_relative", "exec_path")
 
 js_run_binary(
@@ -53,3 +54,6 @@ filegroup(
         "//packages/engine:dist",
     ],
 )
+
+# The example suites' package.json files, for the root manifest checks.
+workspace_configs()
