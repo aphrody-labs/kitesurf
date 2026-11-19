@@ -13,7 +13,6 @@
     "prebuild": "bazel run //packages/engine:dev_build",
     "dev": "bun run prebuild && MINIFLARE_WORKERD_V8_FLAGS=${MINIFLARE_WORKERD_V8_FLAGS:---expose-gc} wrangler dev --env local -c wrangler.jsonc -c test/fixtures-worker/wrangler.jsonc --port ${KITESURF_PORT:-8787} --inspector-port ${KITESURF_INSPECTOR_PORT:-9229}",
     "dev:wpt": "bun run prebuild && MINIFLARE_WORKERD_V8_FLAGS=${MINIFLARE_WORKERD_V8_FLAGS:---expose-gc} wrangler dev --env local -c wrangler.jsonc -c test/fixtures-worker/wrangler.jsonc --port ${KITESURF_PORT:-8787} --inspector-port ${KITESURF_INSPECTOR_PORT:-9229}",
-    "dev:simulate-prod": "bun run prebuild && MINIFLARE_WORKERD_V8_FLAGS=${MINIFLARE_WORKERD_V8_FLAGS:---expose-gc} wrangler dev --env local -c wrangler.jsonc -c test/fixtures-worker/wrangler.jsonc --port ${KITESURF_PORT:-8787} --inspector-port ${KITESURF_INSPECTOR_PORT:-9229} --var KITESURF_SIMULATE_PROD_EVAL:1",
     "dev:memprof": "bun --cwd ../.. run build:wasm:memprof && MINIFLARE_WORKERD_V8_FLAGS=${MINIFLARE_WORKERD_V8_FLAGS:---expose-gc} wrangler dev --env local -c wrangler.jsonc -c test/fixtures-worker/wrangler.jsonc --port ${KITESURF_PORT:-8787} --inspector-port ${KITESURF_INSPECTOR_PORT:-9229}",
     "build": "bun run prebuild",
     "cf-typegen": "wrangler types -c wrangler.jsonc --include-runtime --no-strict-vars && wrangler types -c test/fixtures-worker/wrangler.jsonc --include-runtime --no-strict-vars test/fixtures-worker/worker-configuration.d.ts",

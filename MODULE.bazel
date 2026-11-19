@@ -280,6 +280,7 @@ npm.npm_translate_lock(
         "//:packages/core/pkg/package.json",
         "//:packages/dom-shim/package.json",
         "//:packages/engine/package.json",
+        "//:packages/engine-server/package.json",
         "//:packages/jsrpc-types/package.json",
         "//:packages/kitesurf-cli/package.json",
         "//:packages/page-renderer/package.json",

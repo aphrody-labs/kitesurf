@@ -27,7 +27,7 @@ js_library(
     srcs = ["wpt-engine.mjs"],
     data = ["//packages/engine:package_json"],
     deps = [
-        "//packages/engine:node_modules/miniflare",
+        "//packages/engine-server:pkg",
         "//packages/engine:node_modules/wrangler",
     ],
 )
@@ -162,6 +162,22 @@ js_binary(
     ],
     entry_point = "e2e-fixtures.mjs",
     visibility = ["//packages/engine:__pkg__"],
+)
+
+js_binary(
+    name = "container_vars",
+    data = [
+        "//packages/engine:package_json",
+        "//packages/engine:node_modules/wrangler",
+    ],
+    entry_point = "container-vars.mjs",
+    visibility = ["//docker:__pkg__"],
+)
+
+js_binary(
+    name = "workerd_config",
+    entry_point = "workerd-config.mjs",
+    visibility = ["//docker:__pkg__"],
 )
 
 _LINT_DATA = glob(
@@ -406,6 +422,8 @@ _HELPERS_DATA = glob(["*.mjs"]) + [
     # engine-e2e-config.test.mjs loads the engine's e2e vitest config.
     "//:node_modules/typescript",
     "//packages/engine:e2e_config",
+    # wpt-engine.test.mjs serves a dist through the engine server.
+    "//packages/engine-server:pkg",
     "//:pw_expectations",
     "//:pw_tests",
     "//:wpt_expectations",

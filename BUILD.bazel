@@ -66,10 +66,12 @@ copy_to_bin(
 )
 
 _CONFIG_PACKAGES = [
+    "docker",
     "packages/core/pkg",
     "packages/dom-shim",
     "packages/engine",
     "packages/engine/test/e2e",
+    "packages/engine-server",
     "packages/jsrpc-types",
     "packages/kitesurf-cli",
     "packages/page-renderer",

@@ -140,6 +140,12 @@ importers:
         specifier: ^4.131.2
         version: 4.131.2(@cloudflare/workers-types@5.20260911.1)(@types/node@25.9.5)
 
+  packages/engine-server:
+    dependencies:
+      miniflare:
+        specifier: 5.20260911.1-alpha
+        version: 5.20260911.1-alpha(@types/node@25.9.5)
+
   packages/jsrpc-types:
     dependencies:
       devtools-protocol:

@@ -27,6 +27,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           rust: "true"
+          pnpm-cache: "false"
       - run: rustup target add ${{ matrix.target }}
       - name: Build the kitesurf CLI
         run: cargo build --release --locked --manifest-path packages/kitesurf-cli/Cargo.toml --target ${{ matrix.target }}
