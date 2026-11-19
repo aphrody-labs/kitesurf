@@ -144,6 +144,22 @@ describe("buildScriptBundle parser-inserted script lifecycle", () => {
     expect(bundle.classicAsyncSource).toContain(`${LIFECYCLE}2, "/s.js", "/s.js", true)`);
   });
 
+  it("fires load for an external script that throws", () => {
+    const bundle = buildScriptBundle([
+      classic("", {
+        src: "/boom.js",
+        prefetchedSource: 'throw new Error("boom");',
+        scriptDomIndex: 0,
+      }),
+    ]);
+    const src = bundle.classicRegularSource!;
+    // The spec fires load after the script runs, also when it throws; error means a
+    // failed fetch.
+    // https://html.spec.whatwg.org/multipage/scripting.html#execute-the-script-element
+    expect(src).toContain(`${LIFECYCLE}0, "/boom.js", "/boom.js", true)`);
+    expect(src).not.toContain(`${LIFECYCLE}0, "/boom.js", "/boom.js", false)`);
+  });
+
   it("fires error for a blocked or failed external script", () => {
     const bundle = buildScriptBundle([
       classic("", {
@@ -270,5 +286,33 @@ describe("script URLs in generated comments", () => {
     expect(source).toContain("globalThis.ran = a + b;");
     expect(source).toContain("//# sourceURL=https://cdn.test/a.js");
     expect(linesStartingWithPayload(source, src)).toEqual([]);
+  });
+});
+
+describe("buildScriptBundle inserted bakes", () => {
+  it("declares a strict inserted script's class name", async () => {
+    const source =
+      '"use strict"; class Widget { v() { return "ok"; } } globalThis.__w = new Widget().v();';
+    const insertedBake = [
+      classic("", { src: "/w.js", resolvedSrc: "/w.js", prefetchedSource: source }),
+    ];
+    const insertedDigests = await insertedSourceDigests(insertedBake);
+    const bundle = buildScriptBundle([], { insertedBake, insertedDigests });
+    const module = bundle.insertedModules[bundle.insertedManifest[0]!.module]!;
+    // In strict mode the class rewrite's assignment needs a declared binding.
+    expect(module).toContain('"use strict";');
+    expect(module).toContain("var Widget;");
+    expect(module).toContain("Widget = class Widget");
+  });
+});
+
+describe("buildScriptBundle desynced scan", () => {
+  it("does not rename a function the scan misplaced", () => {
+    const body =
+      "!function(){ var c = `${`}`}`; function helper(){return 1} globalThis.__v = helper(); }();";
+    const bundle = buildScriptBundle([classic(body)]);
+    const src = bundle.classicRegularSource!;
+    expect(src).toContain("function helper()");
+    expect(src).not.toContain("__ks_fn");
   });
 });

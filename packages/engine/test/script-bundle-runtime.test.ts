@@ -52,6 +52,14 @@ if (typeof __ks_is.setCurrentScript !== "function") {
 __ks_is.parserScriptLifecycle = async function (domIndex, rawSrc, src, ok) {
   (globalThis.__log = globalThis.__log || []).push((ok ? "load:" : "error:") + rawSrc);
 };
+// The bundle reports a caught script failure through the internal state.
+__ks_is.pushException = function (err, opts) {
+  (globalThis.__pushedExceptions = globalThis.__pushedExceptions || []).push({
+    message: err && err.message ? String(err.message) : String(err),
+    scriptId: opts && opts.scriptId,
+    url: opts && opts.url,
+  });
+};
 
 const globalsToCollect = ${JSON.stringify(globalsToCollect)};
 const moduleUrls = ${JSON.stringify(moduleUrls)};
@@ -461,5 +469,57 @@ describe("pre-navigation script source isolation", () => {
     expect(globals.__leak).toEqual({ kind: "boolean", value: false });
     expect(globals.__seeded).toEqual({ kind: "object", value: [foreign, current] });
     expect(globals.pageVar).toEqual({ kind: "string", value: "page" });
+  });
+});
+
+describe("classic script failures", () => {
+  it("a throwing script reports the error and the later scripts still run", async () => {
+    const globals = await bootBundleAndCollectGlobals(
+      [classic(`throw new Error("boom");`), classic(`globalThis.afterThrow = 1;`)],
+      ["afterThrow", "__pushedExceptions"],
+    );
+    expect(globals.afterThrow).toEqual({ kind: "number", value: 1 });
+    expect(globals.__pushedExceptions).toEqual({
+      kind: "object",
+      value: [
+        {
+          message: "boom",
+          scriptId: "bundle:classic-regular",
+          url: "inline#0",
+        },
+      ],
+    });
+  });
+});
+
+describe("classic script lifecycle and scan edge cases", () => {
+  it("a throwing external script still gets load", async () => {
+    const globals = await bootBundleAndCollectGlobals(
+      [
+        classic("", {
+          src: "/boom.js",
+          prefetchedSource: 'globalThis.__beforeBoom = 1; throw new Error("boom");',
+        }),
+        classic("", { src: "/ok.js", prefetchedSource: "globalThis.__ok = 1;" }),
+      ],
+      ["__beforeBoom", "__ok", "__log"],
+    );
+    expect(globals.__beforeBoom).toEqual({ kind: "number", value: 1 });
+    expect(globals.__ok).toEqual({ kind: "number", value: 1 });
+    expect(globals.__log).toEqual({ kind: "object", value: ["load:/boom.js", "load:/ok.js"] });
+  });
+
+  it("a script whose scan desyncs on a nested template still runs", async () => {
+    const globals = await bootBundleAndCollectGlobals(
+      [
+        classic(
+          "!function(){ var c = `${`}`}`; function helper(){return 1} globalThis.__helper = helper(); }();",
+        ),
+        classic("globalThis.__afterDesync = 1;"),
+      ],
+      ["__helper", "__afterDesync"],
+    );
+    expect(globals.__helper).toEqual({ kind: "number", value: 1 });
+    expect(globals.__afterDesync).toEqual({ kind: "number", value: 1 });
   });
 });
