@@ -34,6 +34,10 @@ interface QueuedFetch {
 }
 
 let installed = false;
+// Set false by drainInitShims for the install that made it. A module can save a shim (`const f =
+// fetch`) during init and call it long after the drain, so a retired shim forwards to the real
+// function instead of queueing for a drain that already happened.
+let currentInstall: { live: boolean } | null = null;
 let realSetTimeout: RealSetTimeout | null = null;
 let realClearTimeout: RealClearTimeout | null = null;
 let realSetInterval: RealSetTimeout | null = null;
@@ -51,11 +55,18 @@ const canceledIntervals = new Set<number>();
 export function installInitShims(): void {
   if (installed) return;
   installed = true;
+  const install = { live: true };
+  currentInstall = install;
   realSetTimeout = globalThis.setTimeout;
   realClearTimeout = globalThis.clearTimeout;
   realSetInterval = (globalThis as { setInterval?: unknown }).setInterval as RealSetTimeout;
   realClearInterval = (globalThis as { clearInterval?: unknown }).clearInterval as RealClearTimeout;
   realFetch = globalThis.fetch;
+  const shimRealSetTimeout = realSetTimeout;
+  const shimRealClearTimeout = realClearTimeout;
+  const shimRealSetInterval = realSetInterval;
+  const shimRealClearInterval = realClearInterval;
+  const shimRealFetch = realFetch;
 
   const coerceInitTimerTask = (fn: TimerFn | string | unknown): TimerFn => {
     if (typeof fn === "function") return fn as TimerFn;
@@ -82,6 +93,7 @@ export function installInitShims(): void {
     delay?: number,
     ...args: unknown[]
   ): number {
+    if (!install.live) return shimRealSetTimeout.call(globalThis, fn as TimerFn, delay, ...args);
     const task = coerceInitTimerTask(fn);
     const fakeId = nextFakeId++;
     queuedTimers.push({
@@ -96,6 +108,7 @@ export function installInitShims(): void {
   (globalThis as { clearTimeout: unknown }).clearTimeout = function clearTimeout(
     id: number | undefined,
   ): void {
+    if (!install.live) return shimRealClearTimeout.call(globalThis, id);
     if (typeof id !== "number") return;
     if (fakeToReal.has(id)) {
       const realId = fakeToReal.get(id)!;
@@ -111,6 +124,7 @@ export function installInitShims(): void {
     delay?: number,
     ...args: unknown[]
   ): number {
+    if (!install.live) return shimRealSetInterval.call(globalThis, fn as TimerFn, delay, ...args);
     const task = coerceInitTimerTask(fn);
     const fakeId = nextFakeId++;
     queuedIntervals.push({
@@ -125,6 +139,7 @@ export function installInitShims(): void {
   (globalThis as { clearInterval: unknown }).clearInterval = function clearInterval(
     id: number | undefined,
   ): void {
+    if (!install.live) return shimRealClearInterval.call(globalThis, id);
     if (typeof id !== "number") return;
     if (fakeIntervalToReal.has(id)) {
       const realId = fakeIntervalToReal.get(id)!;
@@ -139,6 +154,7 @@ export function installInitShims(): void {
     input: Parameters<typeof globalThis.fetch>[0],
     init?: Parameters<typeof globalThis.fetch>[1],
   ): Promise<Response> {
+    if (!install.live) return shimRealFetch.call(globalThis, input, init);
     let resolve!: (value: Response) => void;
     let reject!: (reason: unknown) => void;
     const promise = new Promise<Response>((resolveResponse, rejectResponse) => {
@@ -174,6 +190,8 @@ export function installInitShims(): void {
 
 export function drainInitShims(): void {
   if (!installed) return;
+  if (currentInstall) currentInstall.live = false;
+  currentInstall = null;
   (globalThis as { setTimeout: unknown }).setTimeout = realSetTimeout!;
   (globalThis as { clearTimeout: unknown }).clearTimeout = realClearTimeout!;
   (globalThis as { setInterval: unknown }).setInterval = realSetInterval!;

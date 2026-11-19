@@ -425,6 +425,7 @@ node_test(
             "page-renderer-pdf-stream.test.mjs",
             "page-script-startup-input.test.mjs",
             "page-script-frame-bitmap-gate.test.mjs",
+            "page-script-init-shims.test.mjs",
             "wasm-memory-views.test.mjs",
             "wpt-compare.test.mjs",
         ],
@@ -484,6 +485,16 @@ node_test(
         "wasm-memory-views.mjs",
         "wasm-memory-views.test.mjs",
         "//packages/core/pkg",
+    ],
+)
+
+node_test(
+    name = "page_script_init_shims_test",
+    args = ["page-script-init-shims.test.mjs"],
+    data = [
+        "page-script-init-shims.test.mjs",
+        "//:node_modules/typescript",
+        "//packages/page-script:init_shims_source",
     ],
 )
 

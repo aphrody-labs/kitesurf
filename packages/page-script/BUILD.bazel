@@ -35,6 +35,12 @@ js_library(
 )
 
 js_library(
+    name = "init_shims_source",
+    srcs = ["src/init-shims.ts"],
+    visibility = ["//scripts:__pkg__"],
+)
+
+js_library(
     name = "srcs",
     srcs = ["package.json", "tsconfig.json"] + glob(["src/**"]),
     deps = [
