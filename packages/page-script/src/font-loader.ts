@@ -11,15 +11,17 @@ import {
   register_emoji_font,
   register_symbol_fonts,
   register_cjk_font,
+  register_cjk_region_font,
   register_script_font,
   setFontShapingLazy,
   pendingLazyFontPaths,
   upgradeFontFace,
   finishFontUpgrade,
+  uaFontProfile,
 } from "./wasm-glue.js";
 import { NativePromise } from "./native-scheduling.ts";
-import { startupFontDefer, startupPixelFree } from "./startup-probe.ts";
-import { CJK_SCAN, EMOJI_BMP_SCAN, SCRIPT_RANGES } from "./source-scan.ts";
+import { startupFontDefer, startupFontProfile, startupPixelFree } from "./startup-probe.ts";
+import { CJK_REGION_SCANS, CJK_SCAN, EMOJI_BMP_SCAN, SCRIPT_RANGES } from "./source-scan.ts";
 import type { SourceFontScan } from "@kitesurf/jsrpc-types/page-script";
 
 let pending: Promise<void> | null = null;
@@ -28,9 +30,77 @@ let emojiPending: Promise<void> | null = null;
 
 const ASSET_HOST = "http://kitesurf-fonts";
 
-const UA_FONT_PATHS = ["/fonts/NotoSans.ttf", "/fonts/NotoSans-Italic.ttf", "/fonts/NotoSerif.ttf"];
+// The profile's UA faces, from core so the fetched files are the assets registration records.
+// `faces` follows register_ua_fonts order: sans pair, system pair, serif trio, Georgia pair.
+interface UaFontProfile {
+  name: string;
+  faces: string[];
+  serifOnDemand: boolean;
+  latinFallback: boolean;
+}
+
+const UA_FACE_COUNT = 9;
+const REQUIRED_UA_FACES = 2;
+const SERIF_FACES = { start: 4, end: 7 };
+
+let uaProfile: UaFontProfile | null = null;
+
+function readUaFontProfile(name: string): UaFontProfile | null {
+  const json = uaFontProfile(name);
+  if (!json) return null;
+  const raw: unknown = JSON.parse(json);
+  if (typeof raw !== "object" || raw === null) return null;
+  if (!("faces" in raw && "serifOnDemand" in raw && "latinFallback" in raw)) return null;
+  const { faces, serifOnDemand, latinFallback } = raw;
+  if (!Array.isArray(faces) || faces.length !== UA_FACE_COUNT) return null;
+  if (!faces.every((face): face is string => typeof face === "string")) return null;
+  return {
+    name,
+    faces,
+    serifOnDemand: serifOnDemand === true,
+    latinFallback: latinFallback === true,
+  };
+}
+
+function activeUaFontProfile(): UaFontProfile {
+  if (uaProfile) return uaProfile;
+  uaProfile = readUaFontProfile(startupFontProfile);
+  if (!uaProfile) {
+    console.warn(`[kitesurf-fonts] unknown font profile ${JSON.stringify(startupFontProfile)}`);
+    uaProfile = readUaFontProfile("noto");
+  }
+  if (!uaProfile) throw new Error("[kitesurf-fonts] core has no noto font profile");
+  return uaProfile;
+}
+
+// The profile's face paths for this page; "" skips a face, and serif may wait for a serif family.
+function uaFacePaths(wantSerif: boolean): string[] {
+  const { faces, serifOnDemand } = activeUaFontProfile();
+  return faces.map((path, i) =>
+    serifOnDemand && !wantSerif && i >= SERIF_FACES.start && i < SERIF_FACES.end ? "" : path,
+  );
+}
 
 const MONO_FONT_PATH = "/fonts/NotoSansMono.ttf";
+
+const EMPTY_FACE = new Uint8Array(0);
+
+function registerUaFaces(faces: Uint8Array[], mono: Uint8Array): boolean {
+  const face = (i: number): Uint8Array => faces[i] ?? EMPTY_FACE;
+  return register_ua_fonts(
+    face(0),
+    face(1),
+    face(2),
+    face(3),
+    face(4),
+    face(5),
+    face(6),
+    face(7),
+    face(8),
+    mono,
+    activeUaFontProfile().name,
+  );
+}
 
 const SYMBOL_FONT_PATHS = ["/fonts/NotoSansSymbols.ttf", "/fonts/NotoSansSymbols2.ttf"];
 
@@ -44,6 +114,22 @@ const CJK_SHAPING_PATH = "/fonts/NotoSansCJKsc-Regular.shaping.otf";
 
 let cjkPending: Promise<void> | null = null;
 
+interface CjkRegionFont {
+  region: string;
+  path: string;
+  shapingPath: string;
+  range?: RegExp;
+}
+const CJK_REGION_FILES: Record<string, string> = {
+  JP: "NotoSansCJKjp-Regular",
+  TC: "NotoSansCJKtc-Regular",
+};
+const CJK_REGION_FONTS: CjkRegionFont[] = CJK_REGION_SCANS.map(({ region, range }) => {
+  const file = CJK_REGION_FILES[region];
+  if (!file) throw new Error(`[kitesurf-fonts] no face file for CJK region ${region}`);
+  return { region, path: `/fonts/${file}.woff2`, shapingPath: `/fonts/${file}.shaping.otf`, range };
+});
+
 let symbolPending: Promise<void> | null = null;
 
 interface ScriptFont {
@@ -52,6 +138,8 @@ interface ScriptFont {
   range: RegExp;
 }
 const SCRIPT_FONT_FILES: Record<string, string> = {
+  // Noto Sans for the Latin codepoints a profile's UA faces lack; only when the profile asks.
+  Latn: "NotoSans.ttf",
   Arab: "NotoSansArabic.ttf",
   Hebr: "NotoSansHebrew.ttf",
   Deva: "NotoSansDevanagari.ttf",
@@ -70,6 +158,7 @@ const SCRIPT_FONT_FILES: Record<string, string> = {
   Laoo: "NotoSansLao.ttf",
   Geor: "NotoSansGeorgian.ttf",
   Armn: "NotoSansArmenian.ttf",
+  Hang: "NotoSansKR.ttf",
 };
 const SCRIPT_FONTS: ScriptFont[] = SCRIPT_RANGES.map(({ tag, range }) => {
   const file = SCRIPT_FONT_FILES[tag];
@@ -78,6 +167,10 @@ const SCRIPT_FONTS: ScriptFont[] = SCRIPT_RANGES.map(({ tag, range }) => {
 });
 
 const scriptPending = new Map<string, Promise<void>>();
+
+function scriptFontActive(scriptFont: ScriptFont): boolean {
+  return scriptFont.tag !== "Latn" || activeUaFontProfile().latinFallback;
+}
 
 function registerScriptIfNeeded(scriptFont: ScriptFont): Promise<void> {
   const existing = scriptPending.get(scriptFont.tag);
@@ -107,6 +200,21 @@ async function fetchBytes(path: string): Promise<Uint8Array> {
 
 function shapingVariant(path: string): string {
   return path.replace(/\.ttf$/, ".shaping.otf");
+}
+
+// The CJK faces ship as a WOFF2 full file and a separate outline-free shaping file. A full-mode
+// page (canvas or SVG text) needs outlines, so it skips the shaping file.
+function fetchCjkBytes(path: string, shapingPath: string): Promise<Uint8Array> {
+  if (fontLoaderMode() === "full") return fetchBytes(path);
+  return fetchBytes(shapingPath).catch(() => fetchBytes(path));
+}
+
+// An upgrade that finished while a lazy fetch was in flight never swaps that face, so a shaping
+// file that lands after the switch to full is replaced by the full file before it registers.
+async function fetchCjkFace(path: string, shapingPath: string): Promise<Uint8Array> {
+  const startedLazy = fontLoaderMode() === "lazy";
+  const bytes = await fetchCjkBytes(path, shapingPath);
+  return startedLazy && fontLoaderMode() === "full" ? fetchBytes(path) : bytes;
 }
 
 let fontMode: "full" | "pixelFree" | "lazy" | null = null;
@@ -236,8 +344,12 @@ function registerCjkIfNeeded(): Promise<void> {
     try {
       const startedAt =
         typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
-      const bytes = await fetchBytes(CJK_SHAPING_PATH).catch(() => fetchBytes(CJK_FONT_PATH));
-      register_cjk_font(bytes);
+      const bytes = await fetchCjkFace(CJK_FONT_PATH, CJK_SHAPING_PATH);
+      // Core declines while the UA faces, and with them the context, are still deferred.
+      if (!register_cjk_font(bytes) && fontsDeferredUnregistered()) {
+        cjkPending = null;
+        return;
+      }
       const finishedAt =
         typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
       console.log(
@@ -250,6 +362,31 @@ function registerCjkIfNeeded(): Promise<void> {
     }
   })();
   return cjkPending;
+}
+
+const cjkRegionPending = new Map<string, Promise<void>>();
+
+function registerCjkRegionIfNeeded(font: CjkRegionFont): Promise<void> {
+  const existing = cjkRegionPending.get(font.region);
+  if (existing) return existing;
+  const registrationPromise = (async () => {
+    try {
+      const bytes = await fetchCjkFace(font.path, font.shapingPath);
+      if (!register_cjk_region_font(bytes, font.region) && fontsDeferredUnregistered()) {
+        cjkRegionPending.delete(font.region);
+        return;
+      }
+      console.log(
+        `[kitesurf-fonts] registered CJK ${font.region} font (${bytes.byteLength} bytes)`,
+      );
+    } catch (e) {
+      console.warn(`[kitesurf-fonts] CJK ${font.region} registration failed:`, String(e));
+      cjkRegionPending.delete(font.region);
+      throw e;
+    }
+  })();
+  cjkRegionPending.set(font.region, registrationPromise);
+  return registrationPromise;
 }
 
 function registerEmojiIfNeeded(): Promise<void> {
@@ -277,7 +414,7 @@ export function cjkPendingPromise(): Promise<void> | null {
 }
 
 export function scriptPendingPromises(): Promise<void>[] {
-  return [...scriptPending.values()];
+  return [...scriptPending.values(), ...cjkRegionPending.values()];
 }
 
 interface ScriptTextProbe {
@@ -296,6 +433,9 @@ function classRanges(unicodeRange: RegExp): Uint32Array {
   return Uint32Array.from(out);
 }
 const CJK_RANGES = classRanges(CJK_SCAN);
+const CJK_REGION_RANGES = CJK_REGION_FONTS.flatMap((font) =>
+  font.range ? [{ font, ranges: classRanges(font.range) }] : [],
+);
 const EMOJI_RANGES = Uint32Array.from([...classRanges(EMOJI_BMP_SCAN), 0x1f000, 0x1ffff]);
 const SCRIPT_FACE_RANGES = SCRIPT_FONTS.map((scriptFont) => ({
   scriptFont,
@@ -315,11 +455,20 @@ export function demandFacesForScriptText(dom: ScriptTextProbe): void {
   if (!cjkPending && dom.textUsesCodepoints(CJK_RANGES)) {
     tasks.push(registerCjkIfNeeded());
   }
+  for (const { font, ranges } of CJK_REGION_RANGES) {
+    if (!cjkRegionPending.has(font.region) && dom.textUsesCodepoints(ranges)) {
+      tasks.push(registerCjkRegionIfNeeded(font));
+    }
+  }
   if (!emojiPending && dom.textUsesCodepoints(EMOJI_RANGES)) {
     tasks.push(registerEmojiIfNeeded());
   }
   for (const { scriptFont, ranges } of SCRIPT_FACE_RANGES) {
-    if (!scriptPending.has(scriptFont.tag) && dom.textUsesCodepoints(ranges)) {
+    if (
+      !scriptPending.has(scriptFont.tag) &&
+      scriptFontActive(scriptFont) &&
+      dom.textUsesCodepoints(ranges)
+    ) {
       tasks.push(registerScriptIfNeeded(scriptFont));
     }
   }
@@ -338,6 +487,7 @@ function computeFontWants(scan?: SourceFontScan): {
   symbols2: boolean;
   emoji: boolean;
   cjk: boolean;
+  cjkRegions: CjkRegionFont[];
   mono: boolean;
   serif: boolean;
   scripts: ScriptFont[];
@@ -347,9 +497,14 @@ function computeFontWants(scan?: SourceFontScan): {
     symbols2: !!scan?.symbols2,
     emoji: !!scan?.emoji,
     cjk: !!scan?.cjk,
+    cjkRegions: scan
+      ? CJK_REGION_FONTS.filter(({ region }) => scan.cjkRegions.includes(region))
+      : [],
     mono: forceMono || !!scan?.mono,
     serif: !!scan?.serif,
-    scripts: scan ? SCRIPT_FONTS.filter(({ tag }) => scan.scripts.includes(tag)) : [],
+    scripts: scan
+      ? SCRIPT_FONTS.filter((font) => scan.scripts.includes(font.tag) && scriptFontActive(font))
+      : [],
   };
 }
 
@@ -368,24 +523,30 @@ export async function ensureFontsRegistered(scan?: SourceFontScan): Promise<void
       const startedAt =
         typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
       try {
-        const coreFetches = [fetchFaceBytes(UA_FONT_PATHS[0]), fetchFaceBytes(UA_FONT_PATHS[1])];
-        if (wantSerif) coreFetches.push(fetchFaceBytes(UA_FONT_PATHS[2]));
-        if (wantMono) coreFetches.push(fetchFaceBytes(MONO_FONT_PATH));
-        const faces = await Promise.all(coreFetches);
-        const sans = faces[0];
-        const sansItalic = faces[1];
-        let faceIndex = 2;
-        const serif = wantSerif ? faces[faceIndex++] : new Uint8Array(0);
-        const mono = wantMono ? faces[faceIndex++] : new Uint8Array(0);
+        // Only the sans pair is required; any other face settles empty and its generics use sans.
+        const optional = (path: string): Promise<Uint8Array> =>
+          fetchFaceBytes(path).catch((e) => {
+            console.warn(`[kitesurf-fonts] ${path} fetch failed:`, String(e));
+            return EMPTY_FACE;
+          });
+        const [core, mono] = await Promise.all([
+          Promise.all(
+            uaFacePaths(wantSerif).map((path, i) => {
+              if (!path) return EMPTY_FACE;
+              return i < REQUIRED_UA_FACES ? fetchFaceBytes(path) : optional(path);
+            }),
+          ),
+          wantMono ? optional(MONO_FONT_PATH) : EMPTY_FACE,
+        ]);
 
-        register_ua_fonts(sans, sansItalic, serif, mono);
+        registerUaFaces(core, mono);
 
         const completedAt =
           typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
-        const totalBytes =
-          sans.byteLength + sansItalic.byteLength + serif.byteLength + mono.byteLength;
+        const faces = [...core, mono].filter((bytes) => bytes.byteLength > 0);
+        const totalBytes = faces.reduce((sum, bytes) => sum + bytes.byteLength, 0);
         console.log(
-          `[kitesurf-fonts] registered ${wantMono ? 4 : 3} Latin UA fonts (${totalBytes} bytes) in ${(completedAt - startedAt).toFixed(1)}ms`,
+          `[kitesurf-fonts] registered ${faces.length} Latin UA fonts (${activeUaFontProfile().name}, ${totalBytes} bytes) in ${(completedAt - startedAt).toFixed(1)}ms`,
         );
       } catch (e) {
         console.warn("[kitesurf-fonts] registration failed:", String(e));
@@ -405,6 +566,9 @@ export async function ensureFontsRegistered(scan?: SourceFontScan): Promise<void
   if (wantSymbols) tasks.push(registerSymbolsIfNeeded(wantSymbols2).catch(() => {}));
   if (wantEmoji) tasks.push(registerEmojiIfNeeded().catch(() => {}));
   if (wantCjk) tasks.push(registerCjkIfNeeded().catch(() => {}));
+  for (const font of wants.cjkRegions) {
+    tasks.push(registerCjkRegionIfNeeded(font).catch(() => {}));
+  }
   for (const scriptFont of wants.scripts) {
     tasks.push(registerScriptIfNeeded(scriptFont).catch(() => {}));
   }
@@ -419,25 +583,24 @@ let deferDegradedReads = 0;
 let deferFetchSettled: Promise<void> | null = null;
 let deferWants: ReturnType<typeof computeFontWants> | null = null;
 const deferRegistered = new Set<string>();
+let deferCorePaths: string[] = [];
 const deferStash: {
-  sans: Uint8Array | null;
-  sansItalic: Uint8Array | null;
-  serif: Uint8Array | null;
+  core: (Uint8Array | null)[];
   mono: Uint8Array | null;
   symbols: Uint8Array | null;
   symbols2: Uint8Array | null;
   emoji: Uint8Array | null;
   cjk: Uint8Array | null;
+  cjkRegions: Map<CjkRegionFont["region"], Uint8Array>;
   scripts: Map<string, Uint8Array>;
 } = {
-  sans: null,
-  sansItalic: null,
-  serif: null,
+  core: [],
   mono: null,
   symbols: null,
   symbols2: null,
   emoji: null,
   cjk: null,
+  cjkRegions: new Map(),
   scripts: new Map(),
 };
 
@@ -453,8 +616,10 @@ const deferSettledEmpty = new Set<string>();
 
 function deferCoreBytesReady(): boolean {
   if (!deferWants) return false;
-  if (!deferStash.sans || !deferStash.sansItalic) return false;
-  if (deferWants.serif && !deferStash.serif && !deferSettledEmpty.has("serif")) return false;
+  const coreReady = deferCorePaths.every(
+    (path, i) => !path || deferStash.core[i] || deferSettledEmpty.has(path),
+  );
+  if (!coreReady) return false;
   if (deferWants.mono && !deferStash.mono && !deferSettledEmpty.has("mono")) return false;
   return true;
 }
@@ -463,21 +628,16 @@ function tryRegisterDeferred(): boolean {
   const wants = deferWants;
   if (!wants || deferCoreFailed) return false;
   if (!deferCoreRegistered) {
-    const { sans, sansItalic } = deferStash;
-    if (!sans || !sansItalic || !deferCoreBytesReady()) return false;
+    if (!deferCoreBytesReady()) return false;
     try {
-      const registered = register_ua_fonts(
-        sans,
-        sansItalic,
-        deferStash.serif ?? new Uint8Array(0),
-        deferStash.mono ?? new Uint8Array(0),
+      const registered = registerUaFaces(
+        deferStash.core.map((bytes) => bytes ?? EMPTY_FACE),
+        deferStash.mono ?? EMPTY_FACE,
       );
       deferCoreRegistered = true;
       // Completed handoffs no longer need their JS staging buffers.
       if (registered) {
-        deferStash.sans = null;
-        deferStash.sansItalic = null;
-        deferStash.serif = null;
+        deferStash.core.fill(null);
         deferStash.mono = null;
       }
       console.log("[kitesurf-fonts] deferred: registered Latin UA core on demand");
@@ -513,6 +673,11 @@ function tryRegisterDeferred(): boolean {
   if (wants.cjk && cjk) {
     group("cjk", () => {
       if (register_cjk_font(cjk)) deferStash.cjk = null;
+    });
+  }
+  for (const [region, bytes] of deferStash.cjkRegions) {
+    group(`cjk:${region}`, () => {
+      if (register_cjk_region_font(bytes, region)) deferStash.cjkRegions.delete(region);
     });
   }
   for (const [tag, bytes] of deferStash.scripts) {
@@ -552,21 +717,17 @@ export function startFontPrefetch(scan?: SourceFontScan): void {
         }),
     );
   };
-  kick(fetchFaceBytes(UA_FONT_PATHS[0]), (bytes) => (deferStash.sans = bytes), "core", "sans");
-  kick(
-    fetchFaceBytes(UA_FONT_PATHS[1]),
-    (bytes) => (deferStash.sansItalic = bytes),
-    "core",
-    "sans-italic",
-  );
-  if (wants.serif) {
+  deferCorePaths = uaFacePaths(wants.serif);
+  deferStash.core = deferCorePaths.map(() => null);
+  deferCorePaths.forEach((path, i) => {
+    if (!path) return;
     kick(
-      fetchFaceBytes(UA_FONT_PATHS[2]),
-      (bytes) => (deferStash.serif = bytes),
-      "optional",
-      "serif",
+      fetchFaceBytes(path),
+      (bytes) => (deferStash.core[i] = bytes),
+      i < REQUIRED_UA_FACES ? "core" : "optional",
+      path,
     );
-  }
+  });
   if (wants.mono) {
     kick(fetchFaceBytes(MONO_FONT_PATH), (bytes) => (deferStash.mono = bytes), "optional", "mono");
   }
@@ -596,10 +757,18 @@ export function startFontPrefetch(scan?: SourceFontScan): void {
   }
   if (wants.cjk) {
     kick(
-      fetchBytes(CJK_SHAPING_PATH).catch(() => fetchBytes(CJK_FONT_PATH)),
+      fetchCjkFace(CJK_FONT_PATH, CJK_SHAPING_PATH),
       (bytes) => (deferStash.cjk = bytes),
       "extra",
       "cjk",
+    );
+  }
+  for (const font of wants.cjkRegions) {
+    kick(
+      fetchCjkFace(font.path, font.shapingPath),
+      (bytes) => deferStash.cjkRegions.set(font.region, bytes),
+      "extra",
+      `cjk:${font.region}`,
     );
   }
   for (const scriptFont of wants.scripts) {

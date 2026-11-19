@@ -113,6 +113,31 @@ pub fn clear_svg_tree_cache() {
     }
 }
 
+/// When an author `@font-face` face of the top-level document registers, the hook sees the
+/// family name twice: before the face registers, then with whether fontique accepted it. An
+/// embedder whose own faces answer to the same name (a platform-name alias) sets them aside
+/// first, so the author's faces own the family, and restores them if the author face failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthorFontFamilyEvent {
+    BeforeRegister,
+    Registered(bool),
+}
+
+pub type AuthorFontFamilyHook =
+    fn(&mut parley::fontique::Collection, &str, AuthorFontFamilyEvent);
+
+static AUTHOR_FONT_FAMILY_HOOK: std::sync::OnceLock<AuthorFontFamilyHook> =
+    std::sync::OnceLock::new();
+
+/// Install the author-family hook. The first call wins.
+pub fn set_author_font_family_hook(hook: AuthorFontFamilyHook) {
+    let _ = AUTHOR_FONT_FAMILY_HOOK.set(hook);
+}
+
+pub(crate) fn author_font_family_hook() -> Option<AuthorFontFamilyHook> {
+    AUTHOR_FONT_FAMILY_HOOK.get().copied()
+}
+
 /// Which generic family a registered SVG font should answer for.
 #[cfg(feature = "svg")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -2510,9 +2510,28 @@ impl BaseDocument {
 
                 // TODO: Investigate eliminating double-box
                 let mut global_font_ctx = self.font_ctx.lock().unwrap();
+                // A subdocument shares the parent's collection, so only the top-level
+                // document's faces may take a family from the embedder.
+                let family_hook = match (
+                    self.subdocument_depth,
+                    crate::util::author_font_family_hook(),
+                    overrides.family_name.as_deref(),
+                ) {
+                    (0, Some(hook), Some(family)) => Some((hook, family)),
+                    _ => None,
+                };
+                if let Some((hook, family)) = family_hook {
+                    use crate::util::AuthorFontFamilyEvent::BeforeRegister;
+                    hook(&mut global_font_ctx.collection, family, BeforeRegister);
+                }
                 let registered = global_font_ctx
                     .collection
                     .register_fonts(font.clone(), Some(info_override));
+                if let Some((hook, family)) = family_hook {
+                    use crate::util::AuthorFontFamilyEvent::Registered;
+                    let ok = !registered.is_empty();
+                    hook(&mut global_font_ctx.collection, family, Registered(ok));
+                }
                 // Record (blob, family, attrs) so the
                 // shaping-until-raster upgrade can swap this face.
                 for (family, fonts) in &registered {
