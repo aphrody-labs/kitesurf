@@ -135,7 +135,7 @@ export function emitOopifExecutionContext(ctx: DispatchCtx, frame: FrameState): 
           name: frame.url,
           uniqueId: `ctx-oopif-${frame.execContextId}`,
           auxData: {
-            isDefault: false,
+            isDefault: true,
             type: "default",
             frameId: frame.frameId,
           },
@@ -214,7 +214,7 @@ export async function handleRuntime(ctx: DispatchCtx, req: CdpRequest): Promise<
                 name: f.url,
                 uniqueId: `ctx-oopif-${f.execContextId}`,
                 auxData: {
-                  isDefault: false,
+                  isDefault: true,
                   type: "default",
                   frameId: f.frameId,
                 },
