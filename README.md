@@ -15,6 +15,11 @@ so you can use it with CDP clients such as Puppeteer.
 > Local development uses `wrangler dev`. A Cloudflare Workers Paid plan is
 > required to run Kitesurf on Cloudflare.
 
+> [!WARNING]
+> Do not open untrusted sites with a local Kitesurf. Locally, Kitesurf runs
+> page JavaScript in `workerd`, which
+> [is not a hardened sandbox](https://developers.cloudflare.com/workers/local-development/#security-considerations).
+
 ## Requirements
 
 - [Bazelisk](https://github.com/bazelbuild/bazelisk), installed as `bazel`.
@@ -23,6 +28,9 @@ so you can use it with CDP clients such as Puppeteer.
 - Node.js 22 or newer
 - pnpm 9.15.4, which the repository pins in `package.json`
 - On macOS, GNU tar (`brew install gnu-tar`)
+- On Linux, GCC with the libstdc++ development files (`sudo apt install g++`
+  on Debian and Ubuntu). Without them the first Rust host tool fails to link
+  with `cannot find -lstdc++`.
 - Rust through [rustup](https://rustup.rs/), only for editing the vendored
   crate patches. `rust-toolchain.toml` pins the same nightly that Bazel uses.
 

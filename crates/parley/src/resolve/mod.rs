@@ -8,7 +8,7 @@ pub(crate) mod tree;
 
 pub(crate) use range::RangedStyleBuilder;
 
-use alloc::{vec, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 
 use super::style::{
     BoxDecorations, Brush, FontFamily, FontFamilyName, FontFeature, FontFeatures, FontStyle,
@@ -138,6 +138,18 @@ impl<T: Clone + PartialEq> Cache<T> {
     }
 }
 
+/// `==` across lifetimes, which the invariant derived impl cannot do.
+fn same_font_family(a: &FontFamily<'_>, b: &FontFamily<'_>) -> bool {
+    match (a, b) {
+        (FontFamily::Source(a), FontFamily::Source(b)) => a == b,
+        (FontFamily::Single(a), FontFamily::Single(b)) => a == b,
+        (FontFamily::List(a), FontFamily::List(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| a == b)
+        }
+        _ => false,
+    }
+}
+
 /// Context for managing dynamic properties during layout.
 #[derive(Clone, Default)]
 pub(crate) struct ResolveContext {
@@ -147,6 +159,11 @@ pub(crate) struct ResolveContext {
     tmp_families: Vec<FamilyId>,
     tmp_variations: Vec<FontVariation>,
     tmp_features: Vec<FontFeature>,
+    /// The last `font-family` value resolved since [`Self::clear`]. Spans
+    /// mostly inherit their parent's list, and resolving it again looks up
+    /// every name in the collection. The collection cannot change before the
+    /// next clear, which starts each build.
+    last_family: Option<(FontFamily<'static>, Resolved<FamilyId>)>,
 }
 
 impl ResolveContext {
@@ -242,6 +259,11 @@ impl ResolveContext {
         fcx: &mut FontContext,
         value: &FontFamily<'_>,
     ) -> Resolved<FamilyId> {
+        if let Some((family, resolved)) = &self.last_family
+            && same_font_family(family, value)
+        {
+            return *resolved;
+        }
         self.tmp_families.clear();
         match value {
             FontFamily::Source(source) => {
@@ -289,6 +311,7 @@ impl ResolveContext {
         }
         let resolved = self.families.insert(&self.tmp_families);
         self.tmp_families.clear();
+        self.last_family = Some((value.clone().into_owned(), resolved));
         resolved
     }
 
@@ -363,6 +386,7 @@ impl ResolveContext {
     /// Clears the resources in the context.
     pub(crate) fn clear(&mut self) {
         self.families.clear();
+        self.last_family = None;
         self.variations.clear();
         self.features.clear();
     }
@@ -563,7 +587,8 @@ impl<B: Brush> ResolvedStyle<B> {
             overflow_wrap: self.overflow_wrap,
             text_wrap_mode: self.text_wrap_mode,
             white_space_collapse: self.white_space_collapse,
-            box_decorations: self.box_decorations.clone(),
+            box_decorations: (!self.box_decorations.is_empty())
+                .then(|| Box::new(self.box_decorations.clone())),
             tab_size: self.tab_size,
             locale: self.locale,
         }
@@ -585,13 +610,16 @@ pub(crate) struct ResolvedDecoration<B: Brush> {
 
 impl<B: Brush> ResolvedDecoration<B> {
     /// Convert into a layout Decoration (filtering out disabled decorations)
-    pub(crate) fn as_layout_decoration(&self, default_brush: &B) -> Option<layout::Decoration<B>> {
+    pub(crate) fn as_layout_decoration(
+        &self,
+        default_brush: &B,
+    ) -> Option<Box<layout::Decoration<B>>> {
         if self.enabled {
-            Some(layout::Decoration {
+            Some(Box::new(layout::Decoration {
                 brush: self.brush.clone().unwrap_or_else(|| default_brush.clone()),
                 offset: self.offset,
                 size: self.size,
-            })
+            }))
         } else {
             None
         }

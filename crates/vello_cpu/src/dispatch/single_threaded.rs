@@ -115,6 +115,7 @@ impl SingleThreadedDispatcher {
         let params = FineRenderParams {
             scene_size: (scene_width, scene_height),
             target_offset: settings.offset,
+            source_y: settings.source_y,
         };
 
         self.bucket_and_rasterize::<S, F>(
@@ -166,6 +167,7 @@ impl SingleThreadedDispatcher {
             &mut target,
             params.scene_size,
             params.target_offset,
+            params.source_y,
             bucketer.rows().len(),
         );
         Self::rasterize_target::<S, F>(
@@ -250,6 +252,7 @@ impl SingleThreadedDispatcher {
             let params = FineRenderParams {
                 scene_size: (width, height),
                 target_offset: (0, 0),
+                source_y: 0,
             };
 
             self.bucket_and_rasterize::<S, F>(

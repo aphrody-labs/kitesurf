@@ -92,7 +92,7 @@ impl ElementCx<'_, '_> {
     /// Draw the mask image layers (analogous to `draw_background` for `background-image`)
     fn draw_css_mask(&self, scene: &mut impl PaintScene) {
         let svg_styles = self.style.get_svg();
-        let image_data = &self.element.mask_images;
+        let image_data = self.element.mask_images();
         let layer_count = svg_styles.mask_image.0.len();
 
         for idx in (0..layer_count).rev() {

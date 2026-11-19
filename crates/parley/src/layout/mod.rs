@@ -29,7 +29,8 @@ pub use data::{BreakReason, SpanFragment};
 pub use layout::Layout;
 pub use line::{GlyphRun, Line, LineMetrics, PositionedInlineBox, PositionedLayoutItem};
 pub use line_break::{
-    BoxBreakData, BreakLines, BreakerState, LineBreakData, MaxHeightBreakData, YieldData,
+    BoxBreakData, BreakLines, BreakSummary, BreakerState, LineBreakData, MaxHeightBreakData,
+    SummaryLine, SummaryLines, YieldData,
 };
 pub use run::Run;
 
@@ -45,6 +46,7 @@ pub use crate::editing::{Cursor, Selection};
 
 use crate::style::{BoxDecorations, Brush, TabSize};
 use crate::{LineHeight, OverflowWrap, TextWrapMode, VerticalAlign, WhiteSpaceCollapse};
+use alloc::boxed::Box;
 
 /// Style properties.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,20 +56,20 @@ pub struct Style<B: Brush> {
     pub(crate) parent: u16,
     /// Brush for drawing glyphs.
     pub brush: B,
-    /// Underline decoration.
-    pub underline: Option<Decoration<B>>,
+    /// Underline decoration. Boxed, like strikethrough, because a laid-out paragraph keeps one
+    /// style per span and few spans carry a parley-drawn decoration.
+    pub underline: Option<Box<Decoration<B>>>,
     /// Strikethrough decoration.
-    pub strikethrough: Option<Decoration<B>>,
+    pub strikethrough: Option<Box<Decoration<B>>>,
     /// CSS box decorations (padding, border, background,
     /// border-radius) for inline-span fragments emitted by this
     /// style. The line-breaker uses
     /// `box_decorations.padding_inline_*` and
     /// `border_inline_*_width` to charge horizontal advance at
     /// span enter/leave; the painter reads every field to draw
-    /// per-line fragments. Empty (`is_empty()`) on the default
-    /// style, which keeps upstream parley behavior unless a span
-    /// opts in.
-    pub box_decorations: BoxDecorations<B>,
+    /// per-line fragments. `None` on the default style so plain
+    /// text does not retain the decoration payload.
+    pub box_decorations: Option<Box<BoxDecorations<B>>>,
     /// Partially resolved line height, either in in layout units or dependent on metrics
     pub(crate) line_height: LineHeight,
     /// Vertical alignment of this style's span within the line

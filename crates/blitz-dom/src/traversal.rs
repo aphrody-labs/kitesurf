@@ -13,21 +13,20 @@ macro_rules! iter_flat_children {
             .attached_shadow_root_id()
             .unwrap_or($node_id);
         let use_assigned = $nodes[src]
-            .assigned_nodes
-            .as_ref()
+            .assigned_nodes()
             .is_some_and(|a| !a.is_empty());
         if use_assigned {
-            let assigned = $nodes[src].assigned_nodes.take().unwrap();
+            let assigned = $nodes[src].take_assigned_nodes().unwrap();
             for child_id in assigned.iter().copied() {
                 $cb(child_id)
             }
-            $nodes[src].assigned_nodes = Some(assigned);
+            $nodes[src].set_assigned_nodes(Some(assigned));
         } else {
-            let children = core::mem::take(&mut $nodes[src].children);
-            for child_id in children.iter().copied() {
+            let children = $nodes[src].take_detached_children();
+            for child_id in children.ids() {
                 $cb(child_id)
             }
-            $nodes[src].children = children;
+            $nodes[src].restore_detached_children(children);
         }
     }};
 }
@@ -60,7 +59,7 @@ pub struct TreeTraverser<'a> {
 impl<'a> TreeTraverser<'a> {
     /// Creates a new tree traverser for the given document which starts at the root node.
     pub fn new(doc: &'a BaseDocument) -> Self {
-        Self::new_with_root(doc, doc.root_node().id)
+        Self::new_with_root(doc, doc.root_node().id())
     }
 
     /// Creates a new tree traverser for the given document which starts at the specified node.
@@ -76,7 +75,7 @@ impl Iterator for TreeTraverser<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.stack.pop()?;
         let node = self.doc.get_node(id)?;
-        self.stack.extend(node.children.iter().rev());
+        self.stack.extend(node.children().iter().rev());
         Some(id)
     }
 }
@@ -101,7 +100,7 @@ impl Iterator for AncestorTraverser<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let current_node = self.doc.get_node(self.current)?;
-        self.current = current_node.parent?;
+        self.current = current_node.parent_id()?;
         Some(self.current)
     }
 }
@@ -131,10 +130,10 @@ impl BaseDocument {
             let node = &self.nodes[node_id];
 
             if !node.is_anonymous() {
-                return node.id;
+                return node.id();
             }
 
-            let Some(parent_id) = node.layout_parent.get() else {
+            let Some(parent_id) = node.layout_parent_id() else {
                 // Shouldn't be reachable unless invalid node_id is passed
                 // as root node is always non-anonymous
                 panic!("Node does not exist or does not have a non-anonymous parent");
@@ -149,11 +148,11 @@ impl BaseDocument {
         node_id: NodeId,
         mut cb: impl FnMut(NodeId, &mut BaseDocument),
     ) {
-        let children = std::mem::take(&mut self.nodes[node_id].children);
-        for child_id in children.iter().cloned() {
+        let children = self.nodes[node_id].take_detached_children();
+        for child_id in children.ids() {
             cb(child_id, self);
         }
-        self.nodes[node_id].children = children;
+        self.nodes[node_id].restore_detached_children(children);
     }
 
     pub fn iter_subtree_mut(
@@ -175,12 +174,12 @@ impl BaseDocument {
                 iter_subtree_mut_inner(doc, shadow_root_id, cb);
             }
 
-            let children = std::mem::take(&mut doc.nodes[node_id].children);
-            for child_id in children.iter().cloned() {
+            let children = doc.nodes[node_id].take_detached_children();
+            for child_id in children.ids() {
                 cb(child_id, doc);
                 iter_subtree_mut_inner(doc, child_id, cb);
             }
-            doc.nodes[node_id].children = children;
+            doc.nodes[node_id].restore_detached_children(children);
         }
     }
 
@@ -217,21 +216,20 @@ impl BaseDocument {
             .attached_shadow_root_id()
             .unwrap_or(node_id);
         let use_assigned = self.nodes[src]
-            .assigned_nodes
-            .as_ref()
+            .assigned_nodes()
             .is_some_and(|a| !a.is_empty());
         if use_assigned {
-            let assigned = self.nodes[src].assigned_nodes.take().unwrap();
+            let assigned = self.nodes[src].take_assigned_nodes().unwrap();
             for child_id in assigned.iter().cloned() {
                 cb(child_id, self);
             }
-            self.nodes[src].assigned_nodes = Some(assigned);
+            self.nodes[src].set_assigned_nodes(Some(assigned));
         } else {
-            let children = std::mem::take(&mut self.nodes[src].children);
-            for child_id in children.iter().cloned() {
+            let children = self.nodes[src].take_detached_children();
+            for child_id in children.ids() {
                 cb(child_id, self);
             }
-            self.nodes[src].children = children;
+            self.nodes[src].restore_detached_children(children);
         }
     }
 
@@ -260,26 +258,22 @@ impl BaseDocument {
     }
 
     pub fn next_node(&self, start: &Node, mut filter: impl FnMut(&Node) -> bool) -> Option<NodeId> {
-        let start_id = start.id;
+        let start_id = start.id();
         let mut node = start;
         let mut look_in_children = true;
         loop {
             // Next is first child
-            let next = if look_in_children && !node.children.is_empty() {
-                let node_id = node.children[0];
+            let next = if look_in_children && !node.children().is_empty() {
+                let node_id = node.children().get(0).unwrap();
                 &self.nodes[node_id]
             }
             // Next is next sibling or parent
             else if let Some(parent) = node.parent_node() {
-                let self_idx = parent
-                    .children
-                    .iter()
-                    .position(|id| *id == node.id)
-                    .unwrap();
+                let self_idx = parent.children().position(node.id()).unwrap();
                 // Next is next sibling
-                if let Some(sibling_id) = parent.children.get(self_idx + 1) {
+                if let Some(sibling_id) = parent.children().get(self_idx + 1) {
                     look_in_children = true;
-                    &self.nodes[*sibling_id]
+                    &self.nodes[sibling_id]
                 }
                 // Next is parent
                 else {
@@ -295,8 +289,8 @@ impl BaseDocument {
             };
 
             if filter(next) {
-                return Some(next.id);
-            } else if next.id == start_id {
+                return Some(next.id());
+            } else if next.id() == start_id {
                 return None;
             }
 
@@ -307,8 +301,8 @@ impl BaseDocument {
     /// The node that comes last within `node`'s subtree in document order,
     /// which is what precedes `node`'s successor in reverse order.
     fn deepest_last_descendant<'a>(&'a self, mut node: &'a Node) -> &'a Node {
-        while let Some(last_child_id) = node.children.last() {
-            node = &self.nodes[*last_child_id];
+        while let Some(last_child_id) = node.children().last() {
+            node = &self.nodes[last_child_id];
         }
         node
     }
@@ -316,19 +310,16 @@ impl BaseDocument {
     /// Mirror of [`Self::next_node`]: walks the tree in reverse document
     /// order, wrapping around to the end of the document.
     pub fn prev_node(&self, start: &Node, mut filter: impl FnMut(&Node) -> bool) -> Option<NodeId> {
-        let start_id = start.id;
+        let start_id = start.id();
         let mut node = start;
         loop {
             let prev = if let Some(parent) = node.parent_node() {
-                let self_idx = parent
-                    .children
-                    .iter()
-                    .position(|id| *id == node.id)
-                    .unwrap();
+                let self_idx = parent.children().position(node.id()).unwrap();
                 // Previous is the deepest last descendant of the previous
                 // sibling, or the parent when there is no previous sibling
                 if self_idx > 0 {
-                    self.deepest_last_descendant(&self.nodes[parent.children[self_idx - 1]])
+                    let previous = parent.children().get(self_idx - 1).unwrap();
+                    self.deepest_last_descendant(&self.nodes[previous])
                 } else {
                     parent
                 }
@@ -339,8 +330,8 @@ impl BaseDocument {
             };
 
             if filter(prev) {
-                return Some(prev.id);
-            } else if prev.id == start_id {
+                return Some(prev.id());
+            } else if prev.id() == start_id {
                 return None;
             }
 
@@ -359,7 +350,7 @@ impl BaseDocument {
                 break;
             }
             ancestors.push(id);
-            maybe_id = node.parent;
+            maybe_id = node.parent_id();
         }
         ancestors.reverse();
         ancestors
@@ -426,7 +417,7 @@ impl BaseDocument {
             return Ordering::Greater;
         }
 
-        for &child_id in &parent.children {
+        for child_id in parent.children() {
             if child_id == divergent_a {
                 return Ordering::Less;
             }
@@ -445,7 +436,7 @@ impl BaseDocument {
         let mut current = Some(node_id);
         while let Some(id) = current {
             ancestors.push(id);
-            current = self.nodes[id].parent;
+            current = self.nodes[id].parent_id();
         }
         ancestors.reverse();
         ancestors
@@ -560,7 +551,7 @@ impl BaseDocument {
     fn resolve_for_traversal(&self, node_id: NodeId) -> (NodeId, Option<NodeId>) {
         let node = &self.nodes[node_id];
         if node.is_anonymous() {
-            (node.parent.unwrap_or(node_id), Some(node_id))
+            (node.parent_id().unwrap_or(node_id), Some(node_id))
         } else {
             (node_id, None)
         }
@@ -575,7 +566,7 @@ impl BaseDocument {
         end: NodeId,
     ) -> Vec<NodeId> {
         let parent = &self.nodes[parent_id];
-        let layout_children = parent.layout_children.borrow();
+        let layout_children = parent.layout_children();
         let Some(children) = layout_children.as_ref() else {
             return Vec::new();
         };
@@ -605,7 +596,7 @@ impl BaseDocument {
     /// Recursively collect all inline roots from a node's layout_children subtree
     fn collect_all_inline_roots_in_subtree(&self, node_id: NodeId, result: &mut Vec<NodeId>) {
         let node = &self.nodes[node_id];
-        let layout_children = node.layout_children.borrow();
+        let layout_children = node.layout_children();
         let Some(children) = layout_children.as_ref() else {
             return;
         };
@@ -632,7 +623,7 @@ impl BaseDocument {
         result: &mut Vec<NodeId>,
     ) {
         let parent = &self.nodes[parent_id];
-        let layout_children = parent.layout_children.borrow();
+        let layout_children = parent.layout_children();
         let Some(children) = layout_children.as_ref() else {
             return;
         };
@@ -667,7 +658,7 @@ impl BaseDocument {
     /// Check if `ancestor_id` is an ancestor of `descendant_id`
     fn is_ancestor_of(&self, ancestor_id: NodeId, descendant_id: NodeId) -> bool {
         let mut current = descendant_id;
-        while let Some(parent) = self.nodes[current].parent {
+        while let Some(parent) = self.nodes[current].parent_id() {
             if parent == ancestor_id {
                 return true;
             }

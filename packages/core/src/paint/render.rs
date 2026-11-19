@@ -183,9 +183,8 @@ fn paint_outset(doc: &HtmlDocument, node_id: NodeId) -> Option<f64> {
             continue;
         };
         stack.extend(
-            node.children
+            node.children()
                 .iter()
-                .copied()
                 .chain(node.before())
                 .chain(node.after()),
         );
@@ -290,6 +289,10 @@ fn ink_bounds(doc: &HtmlDocument, node_id: NodeId) -> Option<kurbo::Rect> {
 #[wasm_bindgen]
 impl DomHandle {
     #[wasm_bindgen(js_name = "renderSceneClip")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "wasm-bindgen exports take the clip and its flags as flat scalars."
+    )]
     pub fn render_scene_clip(
         &self,
         clip_x: i32,
@@ -298,6 +301,7 @@ impl DomHandle {
         clip_h: u32,
         omit_background: bool,
         client_wire: bool,
+        document_crop: bool,
     ) -> Vec<u8> {
         self.render_scene_clip_inner(
             SceneClip {
@@ -309,10 +313,15 @@ impl DomHandle {
             omit_background,
             client_wire,
             false,
+            document_crop,
         )
     }
 
     #[wasm_bindgen(js_name = "renderSceneClipRaw")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "wasm-bindgen exports take the clip and its flags as flat scalars."
+    )]
     pub fn render_scene_clip_raw(
         &self,
         clip_x: i32,
@@ -321,6 +330,7 @@ impl DomHandle {
         clip_h: u32,
         omit_background: bool,
         client_wire: bool,
+        document_crop: bool,
     ) -> Vec<u8> {
         self.render_scene_clip_inner(
             SceneClip {
@@ -332,6 +342,7 @@ impl DomHandle {
             omit_background,
             client_wire,
             true,
+            document_crop,
         )
     }
 
@@ -341,6 +352,7 @@ impl DomHandle {
         omit_background: bool,
         client_wire: bool,
         raw_images: bool,
+        document_crop: bool,
     ) -> Vec<u8> {
         use anyrender::PaintScene as _;
         let SceneClip {
@@ -360,7 +372,8 @@ impl DomHandle {
             Ok(d) => d,
             Err(_) => return Vec::new(),
         };
-        const MAX_CLIP_DIM: u32 = 2560;
+        // Raster coordinates are u16.
+        const MAX_CLIP_DIM: u32 = u16::MAX as u32;
         let overhang_x = (-clip_x).max(0) as u32;
         let overhang_y = (-clip_y).max(0) as u32;
         let sx = clip_x.max(0) as u32;
@@ -383,13 +396,18 @@ impl DomHandle {
             Err(_) => return Vec::new(),
         };
         let entry_scroll = doc.viewport_scroll();
-        doc.set_viewport_scroll_with_fixed_anchor(
-            blitz_dom::Point {
-                x: sx as f64,
-                y: sy as f64,
-            },
-            entry_scroll,
-        );
+        let clip_origin = blitz_dom::Point {
+            x: sx as f64,
+            y: sy as f64,
+        };
+        // A document crop paints as if the page were scrolled to the clip, like Chrome's
+        // beyond-viewport capture; a viewport fragment keeps fixed boxes where the page shows them.
+        let fixed_anchor = if document_crop {
+            clip_origin
+        } else {
+            entry_scroll
+        };
+        doc.set_viewport_scroll_with_fixed_anchor(clip_origin, fixed_anchor);
         let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
             let base: &mut blitz_dom::BaseDocument = &mut doc;
             let mut scene = if client_wire {
@@ -422,6 +440,10 @@ impl DomHandle {
             scene.finish_framed()
         }));
         doc.set_viewport_scroll(entry_scroll);
+        // Scrolling paints through strips, so this path must age layouts too;
+        // after the restore, so the band follows the viewport, not the strip.
+        let base: &mut blitz_dom::BaseDocument = &mut doc;
+        base.evict_offscreen_inline_layouts();
         result.unwrap_or_default()
     }
 
@@ -535,7 +557,7 @@ impl DomHandle {
         };
         drop(fan);
         let target = self.resolve_node_id(exclude);
-        let parent = |id: NodeId| base.get_node(id).and_then(|n| n.parent);
+        let parent = |id: NodeId| base.get_node(id).and_then(|n| n.parent_id());
         let mut lineage = std::collections::HashSet::new();
         let mut cur = target;
         while let Some(id) = cur {
@@ -842,6 +864,9 @@ impl DomHandle {
             if let Ok(mut recency) = self.rbi_image_recency.try_borrow_mut() {
                 recency.evict_stale(&mut images_ref, &scene);
             }
+            // Scrolling resolves nothing, so this is where text that scrolled
+            // far out of view drops its shaped layout again.
+            base.evict_offscreen_inline_layouts();
             scene.finish_framed()
         }));
         result.unwrap_or_default()

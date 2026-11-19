@@ -26,6 +26,7 @@ use taffy::{
 pub(crate) mod construct;
 pub(crate) mod counters;
 pub(crate) mod damage;
+pub(crate) mod evict;
 pub(crate) mod inline;
 pub(crate) mod list;
 pub(crate) mod paint_tree;
@@ -126,7 +127,7 @@ impl<'doc> LayoutPassState<'doc> {
 
     pub(crate) fn new(doc: &'doc mut BaseDocument) -> Self {
         #[cfg(feature = "writing-mode")]
-        let root_id = doc.try_root_element().map(|root| root.id);
+        let root_id = doc.try_root_element().map(|root| root.id());
         Self {
             #[cfg(feature = "writing-mode")]
             root_wm: root_id.map_or(stylo_taffy::WritingMode::empty(), |id| {
@@ -249,23 +250,13 @@ impl LayoutPassState<'_> {
         inputs: taffy::tree::LayoutInput,
         block_ctx: Option<&mut BlockContext<'_>>,
     ) -> taffy::tree::LayoutOutput {
-        let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
+        // Every nested box recurses through this frame, so the leaf and table cases keep their
+        // locals in a frame of their own: inlined here they cost each level of a deep document
+        // about 2 KB of the wasm stack.
+        if let Some(output) = self.layout_leaf_or_table(node_id, inputs) {
+            return output;
+        }
         let node = &mut self.nodes[dom_node_id(node_id)];
-
-        let font_styles = node.primary_styles().map(|style| {
-            use style::values::computed::font::LineHeight;
-
-            let font_size = style.clone_font_size().used_size().px();
-            let line_height = match style.clone_line_height() {
-                LineHeight::Normal => font_size * 1.2,
-                LineHeight::Number(num) => font_size * num.0,
-                LineHeight::Length(value) => value.0.px(),
-            };
-
-            (font_size, line_height)
-        });
-        let font_size = font_styles.map(|s| s.0);
-        let resolved_line_height = font_styles.map(|s| s.1);
 
         match &mut node.data {
             NodeData::Text(data) => {
@@ -301,6 +292,67 @@ impl LayoutPassState<'_> {
                 //     )
                 // })
             }
+            NodeData::Element(_) | NodeData::AnonymousBlock(_) => {
+                // display:flow-root establishes a block formatting context, so it
+                // contains its own floats. taffy infers one from overflow alone,
+                let is_flow_root = node
+                    .primary_styles()
+                    .is_some_and(|styles| styles.clone_display().inside() == DisplayInside::FlowRoot);
+
+                // so withhold the inherited context to make this node a root.
+                let block_ctx = if is_flow_root { None } else { block_ctx };
+
+                if node.flags.is_inline_root() {
+                    return self.compute_inline_layout(dom_node_id(node_id), inputs, block_ctx);
+                }
+
+                // The default CSS file will set
+                match node.taffy_display() {
+                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
+                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
+                    Display::Flex => {
+                        #[cfg(feature = "writing-mode")]
+                        {
+                            self.current_align_axis_is_inline = node.is_column_flex_container();
+                        }
+                        compute_flexbox_layout(self, node_id, inputs)
+                    }
+                    Display::Grid => compute_grid_layout(self, node_id, inputs),
+                    Display::None => taffy::LayoutOutput::HIDDEN,
+                }
+            }
+            NodeData::Document(_) => compute_block_layout(self, node_id, inputs, None),
+
+            _ => taffy::LayoutOutput::HIDDEN,
+        }
+    }
+
+    /// Lay out a form control, a replaced element or a table root; `None` for every other node.
+    #[inline(never)]
+    fn layout_leaf_or_table(
+        &mut self,
+        node_id: NodeId,
+        inputs: taffy::tree::LayoutInput,
+    ) -> Option<taffy::tree::LayoutOutput> {
+        let orthogonal_percent_basis = self.orthogonal_percent_basis_of(dom_node_id(node_id));
+        let node = &mut self.nodes[dom_node_id(node_id)];
+
+        let font_styles = node.primary_styles().map(|style| {
+            use style::values::computed::font::LineHeight;
+
+            let font_size = style.clone_font_size().used_size().px();
+            let line_height = match style.clone_line_height() {
+                LineHeight::Normal => font_size * 1.2,
+                LineHeight::Number(num) => font_size * num.0,
+                LineHeight::Length(value) => value.0.px(),
+            };
+
+            (font_size, line_height)
+        });
+        let font_size = font_styles.map(|s| s.0);
+        let resolved_line_height = font_styles.map(|s| s.1);
+
+        match &mut node.data {
             NodeData::Element(element_data) | NodeData::AnonymousBlock(element_data) => {
                 // TODO: deduplicate with single-line text input
                 if *element_data.name.local == *"textarea" {
@@ -350,7 +402,7 @@ impl LayoutPassState<'_> {
                             );
                         }
                     }
-                    return output;
+                    return Some(output);
                 }
 
                 if *element_data.name.local == *"input" {
@@ -364,10 +416,10 @@ impl LayoutPassState<'_> {
                     match type_attr.as_deref() {
                         // if the input type is hidden, hide it
                         Some("hidden") => {
-                            return taffy::LayoutOutput::HIDDEN;
+                            return Some(taffy::LayoutOutput::HIDDEN);
                         }
                         Some("checkbox") => {
-                            return compute_leaf_layout(
+                            return Some(compute_leaf_layout(
                                 inputs,
                                 &node.layout_style(),
                                 resolve_calc_value,
@@ -387,7 +439,7 @@ impl LayoutPassState<'_> {
                                         height: min_size,
                                     }
                                 },
-                            );
+                            ));
                         }
                         Some(
                             "radio" | "range" | "submit" | "button" | "reset" | "file"
@@ -395,7 +447,7 @@ impl LayoutPassState<'_> {
                             | "week" | "time",
                         ) => {}
                         _ => {
-                            return compute_leaf_layout(
+                            return Some(compute_leaf_layout(
                                 inputs,
                                 &node.layout_style(),
                                 resolve_calc_value,
@@ -407,7 +459,7 @@ impl LayoutPassState<'_> {
                                     },
                                     height: resolved_line_height.unwrap_or(16.0),
                                 },
-                            );
+                            ));
                         }
                     }
                 }
@@ -429,7 +481,7 @@ impl LayoutPassState<'_> {
                     };
 
                     // Get the element's intrinsic dimensions and default object size
-                    let (intrinsic_sizes, default_object_size) = match &element_data.special_data {
+                    let (intrinsic_sizes, default_object_size) = match element_data.special_data() {
                         SpecialElementData::Image(image_data) => match &**image_data {
                             ImageData::Raster(image) => {
                                 let (width, height) = (image.width as f32, image.height as f32);
@@ -542,12 +594,12 @@ impl LayoutPassState<'_> {
 
                     let mut style = node.layout_style();
                     style.set_percent_basis(orthogonal_percent_basis);
-                    return compute_replaced_layout(
+                    return Some(compute_replaced_layout(
                         inputs,
                         &style,
                         resolve_calc_value,
                         &replaced_context,
-                    );
+                    ));
                 }
 
                 if node.flags.is_table_root() {
@@ -569,11 +621,11 @@ impl LayoutPassState<'_> {
                             inputs.available_space.maybe_min(max_available_space);
                     }
 
-                    let SpecialElementData::TableRoot(context) = &self.nodes[dom_node_id(node_id)]
+                    let SpecialElementData::TableRoot(context) = self.nodes[dom_node_id(node_id)]
                         .data
                         .downcast_element()
                         .unwrap()
-                        .special_data
+                        .special_data()
                     else {
                         panic!("Node marked as table root but doesn't have TableContext");
                     };
@@ -624,40 +676,12 @@ impl LayoutPassState<'_> {
                         .bottom
                         .min(output.size.height);
 
-                    return output;
+                    return Some(output);
                 }
 
-                // display:flow-root establishes a block formatting context, so it
-                // contains its own floats. taffy infers one from overflow alone,
-                let is_flow_root = node
-                    .primary_styles()
-                    .is_some_and(|styles| styles.clone_display().inside() == DisplayInside::FlowRoot);
-
-                // so withhold the inherited context to make this node a root.
-                let block_ctx = if is_flow_root { None } else { block_ctx };
-
-                if node.flags.is_inline_root() {
-                    return self.compute_inline_layout(dom_node_id(node_id), inputs, block_ctx);
-                }
-
-                // The default CSS file will set
-                match node.taffy_display() {
-                    Display::Block => compute_block_layout(self, node_id, inputs, block_ctx),
-                    Display::FlowRoot => compute_block_layout(self, node_id, inputs, None),
-                    Display::Flex => {
-                        #[cfg(feature = "writing-mode")]
-                        {
-                            self.current_align_axis_is_inline = node.is_column_flex_container();
-                        }
-                        compute_flexbox_layout(self, node_id, inputs)
-                    }
-                    Display::Grid => compute_grid_layout(self, node_id, inputs),
-                    Display::None => taffy::LayoutOutput::HIDDEN,
-                }
+                None
             }
-            NodeData::Document(_) => compute_block_layout(self, node_id, inputs, None),
-
-            _ => taffy::LayoutOutput::HIDDEN,
+            _ => None,
         }
     }
 }
@@ -669,16 +693,12 @@ impl TraversePartialTree for LayoutPassState<'_> {
         Self: 'a;
 
     fn child_ids(&self, node_id: NodeId) -> Self::ChildIter<'_> {
-        let layout_children = self.node_from_id(node_id).layout_children.borrow(); //.unwrap().as_ref();
-        RefCellChildIter::new(Ref::map(layout_children, |children| {
-            children.as_ref().map(|c| c.as_slice()).unwrap_or(&[])
-        }))
+        RefCellChildIter::new(self.node_from_id(node_id).layout_children())
     }
 
     fn child_count(&self, node_id: NodeId) -> usize {
         self.node_from_id(node_id)
-            .layout_children
-            .borrow()
+            .layout_children()
             .as_ref()
             .map(|c| c.len())
             .unwrap_or(0)
@@ -687,8 +707,7 @@ impl TraversePartialTree for LayoutPassState<'_> {
     fn get_child_id(&self, node_id: NodeId, index: usize) -> NodeId {
         taffy_node_id(
             self.node_from_id(node_id)
-                .layout_children
-                .borrow()
+                .layout_children()
                 .as_ref()
                 .unwrap()[index],
         )
@@ -724,9 +743,9 @@ impl LayoutPartialTree for LayoutPassState<'_> {
         // round_layout is a pure function of these, so noting whether any of
         // them actually moved lets resolve skip the whole rounding walk.
         if !self.layout_changed {
-            self.layout_changed = *self.node_from_id(node_id).unrounded_layout() != *layout;
+            self.layout_changed = self.node_from_id(node_id).unrounded_layout() != *layout;
         }
-        *self.node_from_id_mut(node_id).unrounded_layout_mut() = *layout;
+        self.node_from_id_mut(node_id).set_unrounded_layout(layout);
     }
 
     fn resolve_calc_value(&self, calc_ptr: *const (), parent_size: f32) -> f32 {
@@ -758,36 +777,38 @@ impl LayoutContainingBlock for LayoutPassState<'_> {
 
     fn clear_hoisted_children(&mut self, node_id: NodeId) {
         let containing_block = dom_node_id(node_id);
-        let mut hoisted = self.node_from_id(node_id).hoisted_children.borrow_mut();
+        // Taking rather than clearing in place leaves boxes without hoisted children
+        // without rare storage; layout clears every box it visits.
+        let hoisted = self.node_from_id(node_id).take_hoisted_children();
         for &hoisted_id in hoisted.iter() {
             // A box which has since been claimed by another containing block
             // must keep pointing at that one.
             if let Some(node) = self.nodes.get(hoisted_id) {
-                if node.oof_containing_block.get() == Some(containing_block) {
-                    node.oof_containing_block.set(None);
+                if node.oof_containing_block() == Some(containing_block) {
+                    node.set_oof_containing_block(None);
                 }
             }
         }
-        hoisted.clear();
     }
 
     fn add_hoisted_children(&mut self, node_id: NodeId, hoisted: &[NodeId]) {
+        if hoisted.is_empty() {
+            return;
+        }
         let containing_block = dom_node_id(node_id);
         let node = self.node_from_id(node_id);
-        node.hoisted_children
-            .borrow_mut()
+        node.hoisted_children_mut()
             .extend(hoisted.iter().copied().map(dom_node_id));
         for &hoisted_id in hoisted {
             self.node_from_id(hoisted_id)
-                .oof_containing_block
-                .set(Some(containing_block));
+                .set_oof_containing_block(Some(containing_block));
         }
     }
 
     fn get_detailed_layout_info(&self, node_id: NodeId) -> &DetailedLayoutInfo<Atom> {
         self.node_from_id(node_id)
             .element_data()
-            .map(|element| &element.detailed_layout_info)
+            .map(|element| element.detailed_layout_info())
             .unwrap_or(&DetailedLayoutInfo::None)
     }
 }
@@ -802,7 +823,7 @@ impl taffy::CacheTree for LayoutPassState<'_> {
         let node = self.node_from_id_mut(node_id);
         // A cached container never re-registers its floats into
         // the BFC, so later floats see empty bands. Re-run these.
-        if node.placed_floats.get() {
+        if node.placed_floats() {
             return None;
         }
         node.try_layout_data_mut()?.cache.get(inputs)
@@ -981,22 +1002,22 @@ impl taffy::LayoutGridContainer for LayoutPassState<'_> {
     ) {
         let node = self.node_from_id_mut(node_id);
         if let Some(element) = node.element_data_mut() {
-            element.detailed_layout_info = DetailedLayoutInfo::Grid(Box::new(detailed_grid_info));
+            element.set_grid_info(detailed_grid_info);
         }
     }
 }
 
 impl RoundTree for LayoutPassState<'_> {
     fn get_unrounded_layout(&self, node_id: NodeId) -> Layout {
-        *self.node_from_id(node_id).unrounded_layout()
+        self.node_from_id(node_id).unrounded_layout()
     }
 
     fn set_final_layout(&mut self, node_id: NodeId, layout: &Layout) {
         let layout_data = self.node_from_id_mut(node_id).layout_data_mut();
-        layout_data.final_layout = *layout;
+        layout_data.set_final_layout(layout);
         // This is the only wholesale write of a location, so it is also the
         // only place a baked sticky shift can silently disappear.
-        layout_data.pin_offset = taffy::Point { x: 0.0, y: 0.0 };
+        layout_data.set_pin_offset(taffy::Point { x: 0.0, y: 0.0 });
     }
 
     fn is_out_of_flow(&self, node_id: NodeId) -> bool {
@@ -1004,11 +1025,17 @@ impl RoundTree for LayoutPassState<'_> {
     }
 
     fn hoisted_child_count(&self, node_id: NodeId) -> usize {
-        self.node_from_id(node_id).hoisted_children.borrow().len()
+        self.node_from_id(node_id)
+            .hoisted_children()
+            .map_or(0, |children| children.len())
     }
 
     fn get_hoisted_child_id(&self, node_id: NodeId, index: usize) -> NodeId {
-        taffy_node_id(self.node_from_id(node_id).hoisted_children.borrow()[index])
+        let children = self
+            .node_from_id(node_id)
+            .hoisted_children()
+            .expect("Taffy requested a hoisted child from an empty list");
+        taffy_node_id(children[index])
     }
 
     fn round_grid(&self) -> (f32, f32) {
@@ -1031,16 +1058,12 @@ impl TraversePartialTree for TaffyDebugTree<'_> {
         Self: 'a;
 
     fn child_ids(&self, node_id: NodeId) -> Self::ChildIter<'_> {
-        let layout_children = self.node_from_id(node_id).layout_children.borrow();
-        RefCellChildIter::new(Ref::map(layout_children, |children| {
-            children.as_ref().map(|c| c.as_slice()).unwrap_or(&[])
-        }))
+        RefCellChildIter::new(self.node_from_id(node_id).layout_children())
     }
 
     fn child_count(&self, node_id: NodeId) -> usize {
         self.node_from_id(node_id)
-            .layout_children
-            .borrow()
+            .layout_children()
             .as_ref()
             .map(|c| c.len())
             .unwrap_or(0)
@@ -1049,8 +1072,7 @@ impl TraversePartialTree for TaffyDebugTree<'_> {
     fn get_child_id(&self, node_id: NodeId, index: usize) -> NodeId {
         taffy_node_id(
             self.node_from_id(node_id)
-                .layout_children
-                .borrow()
+                .layout_children()
                 .as_ref()
                 .unwrap()[index],
         )
@@ -1088,7 +1110,7 @@ impl PrintTree for TaffyDebugTree<'_> {
     }
 
     fn get_final_layout(&self, node_id: NodeId) -> Layout {
-        *self.node_from_id(node_id).final_layout()
+        self.node_from_id(node_id).final_layout()
     }
 }
 
@@ -1101,11 +1123,11 @@ impl PrintTree for TaffyDebugTree<'_> {
 // }
 
 pub struct RefCellChildIter<'a> {
-    items: Ref<'a, [crate::NodeId]>,
+    items: Option<Ref<'a, thin_vec::ThinVec<crate::NodeId>>>,
     idx: usize,
 }
 impl<'a> RefCellChildIter<'a> {
-    fn new(items: Ref<'a, [crate::NodeId]>) -> RefCellChildIter<'a> {
+    fn new(items: Option<Ref<'a, thin_vec::ThinVec<crate::NodeId>>>) -> RefCellChildIter<'a> {
         RefCellChildIter { items, idx: 0 }
     }
 }
@@ -1113,7 +1135,7 @@ impl<'a> RefCellChildIter<'a> {
 impl Iterator for RefCellChildIter<'_> {
     type Item = NodeId;
     fn next(&mut self) -> Option<Self::Item> {
-        self.items.get(self.idx).map(|id| {
+        self.items.as_ref()?.get(self.idx).map(|id| {
             self.idx += 1;
             taffy_node_id(*id)
         })

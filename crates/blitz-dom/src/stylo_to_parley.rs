@@ -551,6 +551,19 @@ fn extract_box_decorations(
     }
 }
 
+/// Whether an inline span's parley decorations differ between the styles. Padding and border
+/// are baked into line breaking when the layout is built; background presence is handled apart.
+pub(crate) fn inline_box_decorations_differ(
+    old: &stylo::ComputedValues,
+    new: &stylo::ComputedValues,
+) -> bool {
+    let without_background = |style| parley::BoxDecorations {
+        background_brush: None,
+        ..extract_box_decorations(NodeId::default(), style)
+    };
+    without_background(old) != without_background(new)
+}
+
 pub(crate) fn has_inline_background(style: &stylo::ComputedValues) -> bool {
     use ::style::values::specified::box_::{DisplayInside, DisplayOutside};
 
@@ -566,10 +579,76 @@ pub(crate) fn has_inline_background(style: &stylo::ComputedValues) -> bool {
             > 0.0
 }
 
+/// [`style_borrowed`] with owned family names, for styles kept past `style`'s lifetime.
 pub(crate) fn style(
     span_id: NodeId,
     style: &stylo::ComputedValues,
 ) -> parley::TextStyle<'static, 'static, TextBrush> {
+    let families = font_families(style.get_font())
+        .into_iter()
+        .map(parley::FontFamilyName::into_owned)
+        .collect();
+    style_with_families(span_id, style, families)
+}
+
+/// The parley style of `span_id`, borrowing family names from `style`: a builder resolves a
+/// pushed style at once, so the names need not be copied for each text span.
+pub(crate) fn style_borrowed(
+    span_id: NodeId,
+    style: &stylo::ComputedValues,
+) -> parley::TextStyle<'_, 'static, TextBrush> {
+    style_with_families(span_id, style, font_families(style.get_font()))
+}
+
+fn font_families(font_styles: &stylo::Font) -> Vec<parley::FontFamilyName<'_>> {
+    let font_style = self::font_style(font_styles.font_style);
+    font_styles
+        .font_family
+        .families
+        .list
+        .iter()
+        .filter_map(|family| Some(match family {
+            stylo::SingleFontFamily::FamilyName(name) => {
+                'ret: {
+                    let name = name.name.as_str();
+
+                    // Skip a family still waiting on a face for this style:
+                    // matching would otherwise substitute a loaded sibling
+                    // of the wrong style. Dropping it here falls through to
+                    // the next family, and registration re-shapes the text.
+                    if crate::net::face_pending_for_style(name, font_style) {
+                        return None;
+                    }
+
+                    // Legacy web compatibility
+                    #[cfg(target_vendor = "apple")]
+                    if name == "-apple-system" {
+                        break 'ret parley::FontFamilyName::Generic(
+                            parley::GenericFamily::SystemUi,
+                        );
+                    }
+                    #[cfg(target_os = "macos")]
+                    if name == "BlinkMacSystemFont" {
+                        break 'ret parley::FontFamilyName::Generic(
+                            parley::GenericFamily::SystemUi,
+                        );
+                    }
+
+                    break 'ret parley::FontFamilyName::Named(Cow::Borrowed(name));
+                }
+            }
+            stylo::SingleFontFamily::Generic(generic) => {
+                parley::FontFamilyName::Generic(self::generic_font_family(*generic))
+            }
+        }))
+        .collect()
+}
+
+fn style_with_families<'f>(
+    span_id: NodeId,
+    style: &stylo::ComputedValues,
+    families: Vec<parley::FontFamilyName<'f>>,
+) -> parley::TextStyle<'f, 'static, TextBrush> {
     let font_styles = style.get_font();
     let itext_styles = style.get_inherited_text();
 
@@ -599,48 +678,6 @@ pub(crate) fn style(
     let font_width = self::font_width(font_styles.font_width);
     let font_variations = self::font_variations(&font_styles.font_variation_settings);
     let font_features = self::font_features(font_styles);
-
-    // Convert font family
-    let families: Vec<_> = font_styles
-        .font_family
-        .families
-        .list
-        .iter()
-        .filter_map(|family| Some(match family {
-            stylo::SingleFontFamily::FamilyName(name) => {
-                'ret: {
-                    let name = name.name.as_str();
-
-                    // Skip a family still waiting on a face for this style:
-                    // matching would otherwise substitute a loaded sibling
-                    // of the wrong style. Dropping it here falls through to
-                    // the next family, and registration re-shapes the text.
-                    if crate::net::face_pending_for_style(&name.to_lowercase(), font_style) {
-                        return None;
-                    }
-
-                    // Legacy web compatibility
-                    #[cfg(target_vendor = "apple")]
-                    if name == "-apple-system" {
-                        break 'ret parley::FontFamilyName::Generic(
-                            parley::GenericFamily::SystemUi,
-                        );
-                    }
-                    #[cfg(target_os = "macos")]
-                    if name == "BlinkMacSystemFont" {
-                        break 'ret parley::FontFamilyName::Generic(
-                            parley::GenericFamily::SystemUi,
-                        );
-                    }
-
-                    break 'ret parley::FontFamilyName::Named(Cow::Owned(name.to_string()));
-                }
-            }
-            stylo::SingleFontFamily::Generic(generic) => {
-                parley::FontFamilyName::Generic(self::generic_font_family(*generic))
-            }
-        }))
-        .collect();
 
     // Wrapping and breaking
     // `word-break: break-word` is a legacy compat value (css-text-3):

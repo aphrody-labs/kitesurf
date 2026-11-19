@@ -399,6 +399,9 @@ pub struct AdditionalRelativeSelectorInvalidationMap {
     pub used: bool,
     /// Flag indicating if invalidating a relative selector requires ancestor traversal.
     pub needs_ancestors_traversal: bool,
+    /// Flag indicating if any relative selector starts with a sibling combinator, so an
+    /// anchor can depend on an element inserted after it.
+    pub has_sibling_relative_selectors: bool,
 }
 
 impl Default for AdditionalRelativeSelectorInvalidationMap {
@@ -416,6 +419,7 @@ impl AdditionalRelativeSelectorInvalidationMap {
             any_to_selector: SmallVec::default(),
             used: false,
             needs_ancestors_traversal: false,
+            has_sibling_relative_selectors: false,
         }
     }
 
@@ -1316,6 +1320,15 @@ impl<'a, 'b> RelativeSelectorDependencyCollector<'a, 'b> {
             | RelativeSelectorMatchHint::InSubtree => true,
             _ => false,
         };
+
+        self.additional_relative_selector_invalidation_map
+            .has_sibling_relative_selectors |= matches!(
+            self.selector.match_hint,
+            RelativeSelectorMatchHint::InNextSibling
+                | RelativeSelectorMatchHint::InSibling
+                | RelativeSelectorMatchHint::InNextSiblingSubtree
+                | RelativeSelectorMatchHint::InSiblingSubtree
+        );
         loop {
             // Reset the compound state.
             self.compound_state = PerCompoundState::new(index);

@@ -20,7 +20,11 @@ export interface RenderFrameOpts {
   omitBackground: boolean;
   sinceSeq?: number;
   clip?: { x: number; y: number; width: number; height: number };
+  // The clip is a crop of the whole document, so fixed boxes anchor at its origin.
+  documentCrop?: boolean;
   partialKey?: string;
+  // Rejects a frame whose encoded image would exceed this many bytes.
+  encodedLimit?: number;
   // "encoded" opts out of the renderer's default raw RGBA transport.
   images?: "raw" | "encoded";
   // The document whose resources the call may use; the renderer drops its cache when it changes.

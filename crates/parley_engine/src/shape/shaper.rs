@@ -5,6 +5,7 @@
 
 use alloc::vec::Vec;
 use core::mem;
+use core::ops::Range;
 use harfrust::ShapeOptions as HarfShapeOptions;
 use linebender_resource_handle::{Blob, FontData};
 use parlance::{FontFeature, FontVariation, Language};
@@ -13,7 +14,10 @@ use crate::{
     Analysis, CharInfo, ShapedText,
     itemize::{Item, Segment, TextRange},
     lru_cache::LruCache,
-    shape::{CharCluster, cache},
+    shape::{
+        CharCluster, cache,
+        word_cache::{self, RawGlyph, SpaceSensitive, WordGlyphs},
+    },
 };
 
 /// Shaping options for one item.
@@ -88,23 +92,40 @@ pub struct Shaper {
     shape_data_cache: LruCache<cache::ShapeDataKey, harfrust::ShaperData>,
     shape_instance_cache: LruCache<cache::ShapeInstanceId, harfrust::ShaperInstance>,
     shape_plan_cache: LruCache<cache::ShapePlanId, harfrust::ShapePlan>,
+    /// How each font's shaping can see spaces, `None` when words of it cannot be reused.
+    space_sensitive_cache: LruCache<cache::ShapeDataKey, Option<SpaceSensitive>>,
+    word_cache: LruCache<cache::ShapePlanId, WordGlyphs>,
     unicode_buffer: Option<harfrust::UnicodeBuffer>,
     features: Vec<harfrust::Feature>,
     char_cluster: CharCluster,
+    glyphs: Vec<RawGlyph>,
+    pieces: Vec<Piece>,
 }
 
 impl Default for Shaper {
     fn default() -> Self {
         const MAX_ENTRIES: usize = 16;
+        const MAX_WORD_CACHES: usize = 8;
         Self {
             shape_data_cache: LruCache::new(MAX_ENTRIES),
             shape_instance_cache: LruCache::new(MAX_ENTRIES),
             shape_plan_cache: LruCache::new(MAX_ENTRIES),
+            space_sensitive_cache: LruCache::new(MAX_ENTRIES),
+            word_cache: LruCache::new(MAX_WORD_CACHES),
             unicode_buffer: Some(harfrust::UnicodeBuffer::new()),
             features: Vec::new(),
             char_cluster: CharCluster::default(),
+            glyphs: Vec::new(),
+            pieces: Vec::new(),
         }
     }
+}
+
+/// A maximal stretch of a run that is all U+0020 spaces or has none, relative to the run.
+#[derive(Clone, Debug)]
+struct Piece {
+    bytes: Range<usize>,
+    chars: Range<u32>,
 }
 
 impl core::fmt::Debug for Shaper {
@@ -271,6 +292,13 @@ fn shape_segment(
         )
     }));
 
+    // Word reuse is limited to left-to-right scripts that no shaper reshapes from context.
+    let by_words = direction == harfrust::Direction::LeftToRight
+        && matches!(
+            &segment.script.to_bytes(),
+            b"Latn" | b"Grek" | b"Cyrl" | b"Zyyy"
+        );
+
     // Shape a run of the segment with a single font, appending it to `shaped_text`.
     let mut shape_run = |font: &FontInstance, range: TextRange| {
         // TODO: How do we want to handle errors like this?
@@ -301,7 +329,7 @@ fn shape_segment(
             .shaper(&font_ref)
             .instance(Some(instance))
             .build();
-        let shaper_plan = scx.shape_plan_cache.entry(
+        let plan_key = || {
             cache::ShapePlanKey::new(
                 font.font.data.id(),
                 font.font.index,
@@ -311,54 +339,99 @@ fn shape_segment(
                 language.clone(),
                 &scx.features,
                 Some(options.variations),
-            ),
-            || {
-                harfrust::ShapePlan::new(
-                    &harf_shaper,
-                    direction,
-                    Some(hb_script),
-                    language.as_ref(),
-                    &scx.features,
+            )
+        };
+        let shaper_plan = scx.shape_plan_cache.entry(plan_key(), || {
+            harfrust::ShapePlan::new(
+                &harf_shaper,
+                direction,
+                Some(hb_script),
+                language.as_ref(),
+                &scx.features,
+            )
+        });
+
+        let mut shape =
+            |byte_range: Range<usize>, cluster_base: u32, glyphs: &mut Vec<RawGlyph>| {
+                // Prepare harfrust buffer
+                let mut buffer = mem::take(&mut scx.unicode_buffer).unwrap();
+                buffer.clear();
+                buffer.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
+
+                // Use the entire run text including newlines.
+                let run_text = &text[byte_range.clone()];
+                buffer.reserve(run_text.len());
+                #[expect(clippy::cast_possible_truncation, reason = "Deferred")]
+                for (i, ch) in run_text.chars().enumerate() {
+                    // Ensure that each cluster's index matches the index into `infos`. This is
+                    // required for efficient cluster lookup within `data.rs`.
+                    //
+                    // In other words, instead of using `buffer.push_str`, which iterates `run_text`
+                    // with `char_indices`, push each char individually via `.chars` with a cluster
+                    // index that matches its `infos` counterpart. This allows us to lookup `infos`
+                    // via cluster index in `data.rs`.
+                    buffer.add(ch, cluster_base + i as u32);
+                }
+
+                buffer.set_pre_context(&text[..byte_range.start]);
+                buffer.set_post_context(&text[byte_range.end..]);
+                buffer.set_direction(direction);
+                buffer.set_script(hb_script);
+
+                if let Some(lang) = &language {
+                    buffer.set_language(lang.clone());
+                }
+
+                let glyph_buffer = harf_shaper.shape(
+                    buffer,
+                    HarfShapeOptions::new()
+                        .plan(Some(shaper_plan))
+                        .features(&scx.features)
+                        .point_size(Some(options.font_size)),
+                );
+                glyphs.extend(
+                    glyph_buffer
+                        .glyph_infos()
+                        .iter()
+                        .zip(glyph_buffer.glyph_positions())
+                        .map(|(info, pos)| RawGlyph::from_harfrust(info, pos)),
+                );
+
+                // Replace buffer to reuse allocation in the next run.
+                scx.unicode_buffer = Some(glyph_buffer.clear());
+            };
+
+        let mut glyphs = mem::take(&mut scx.glyphs);
+        glyphs.clear();
+        let sensitive = if by_words && text[range.byte_range.clone()].contains(' ') {
+            scx.space_sensitive_cache
+                .entry(
+                    cache::ShapeDataKey::new(font.font.data.id(), font.font.index),
+                    || word_cache::space_sensitive_glyphs(&font_ref),
                 )
-            },
-        );
-
-        // Prepare harfrust buffer
-        let mut buffer = mem::take(&mut scx.unicode_buffer).unwrap();
-        buffer.clear();
-        buffer.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
-
-        // Use the entire run text including newlines.
-        let run_text = &text[range.byte_range.clone()];
-        buffer.reserve(run_text.len());
-        #[expect(clippy::cast_possible_truncation, reason = "Deferred")]
-        for (i, ch) in run_text.chars().enumerate() {
-            // Ensure that each cluster's index matches the index into `infos`. This is required
-            // for efficient cluster lookup within `data.rs`.
-            //
-            // In other words, instead of using `buffer.push_str`, which iterates `run_text`
-            // with `char_indices`, push each char individually via `.chars` with a cluster index
-            // that matches its `infos` counterpart. This allows us to lookup `infos` via cluster
-            // index in `data.rs`.
-            buffer.add(ch, i as u32);
+                .as_ref()
+        } else {
+            None
+        };
+        if let Some(sensitive) = sensitive {
+            split_into_pieces(
+                &text[range.byte_range.clone()],
+                &char_info[range.char_range.clone()],
+                &mut scx.pieces,
+            );
+            let words = scx.word_cache.entry_mut(plan_key(), WordGlyphs::default);
+            shape_by_words(
+                &text[range.byte_range.clone()],
+                range.byte_range.start,
+                &scx.pieces,
+                sensitive,
+                words,
+                &mut glyphs,
+                &mut shape,
+            );
+        } else {
+            shape(range.byte_range.clone(), 0, &mut glyphs);
         }
-
-        buffer.set_pre_context(&text[..range.byte_range.start]);
-        buffer.set_post_context(&text[range.byte_range.end..]);
-        buffer.set_direction(direction);
-        buffer.set_script(hb_script);
-
-        if let Some(lang) = &language {
-            buffer.set_language(lang.clone());
-        }
-
-        let glyph_buffer = harf_shaper.shape(
-            buffer,
-            HarfShapeOptions::new()
-                .plan(Some(shaper_plan))
-                .features(&scx.features)
-                .point_size(Some(options.font_size)),
-        );
 
         shaped_text.push_run(
             text,
@@ -368,12 +441,10 @@ fn shape_segment(
             char_info,
             char_style_indices,
             font,
-            &glyph_buffer,
+            &glyphs,
             harf_shaper.coords(),
         );
-
-        // Replace buffer to reuse allocation in the next run.
-        scx.unicode_buffer = Some(glyph_buffer.clear());
+        scx.glyphs = glyphs;
     };
 
     // This is the run being accumulated, i.e., consecutive graphemes for which `select_font`
@@ -427,6 +498,146 @@ fn shape_segment(
     }
 
     Ok(())
+}
+
+/// Split a run where it changes between spaces and other text, keeping graphemes whole: a mark on
+/// a space stays in the space's piece.
+fn split_into_pieces(run_text: &str, char_info: &[CharInfo], pieces: &mut Vec<Piece>) {
+    pieces.clear();
+    let mut start = 0;
+    let mut char_start = 0;
+    let mut char_index = 0;
+    let mut in_spaces = run_text.starts_with(' ');
+    for ((byte, ch), info) in run_text.char_indices().zip(char_info) {
+        if (ch == ' ') != in_spaces && info.is_grapheme_start() {
+            pieces.push(Piece {
+                bytes: start..byte,
+                chars: char_start..char_index,
+            });
+            start = byte;
+            char_start = char_index;
+            in_spaces = !in_spaces;
+        }
+        char_index += 1;
+    }
+    pieces.push(Piece {
+        bytes: start..run_text.len(),
+        chars: char_start..char_index,
+    });
+}
+
+/// Append the glyphs of a run whose font shapes across spaces only as `sensitive` allows,
+/// reusing the glyphs of the pieces seen before.
+///
+/// Consecutive unseen pieces are shaped together with one seen piece on each side, so a glyph
+/// that the space beside it moves is shaped next to that space, then the pieces are remembered.
+fn shape_by_words(
+    run_text: &str,
+    run_start: usize,
+    pieces: &[Piece],
+    sensitive: &SpaceSensitive,
+    words: &mut WordGlyphs,
+    glyphs: &mut Vec<RawGlyph>,
+    shape: &mut impl FnMut(Range<usize>, u32, &mut Vec<RawGlyph>),
+) {
+    let text_of = |piece: &Piece| &run_text[piece.bytes.clone()];
+    // Where the glyphs of the piece before the current one start.
+    let mut previous_piece_start = 0;
+    let mut piece_index = 0;
+    while piece_index < pieces.len() {
+        if let Some(cached) = words.get(text_of(&pieces[piece_index])) {
+            let base = pieces[piece_index].chars.start;
+            previous_piece_start = glyphs.len();
+            glyphs.extend(cached.iter().map(|glyph| RawGlyph {
+                cluster: glyph.cluster + base,
+                ..*glyph
+            }));
+            piece_index += 1;
+            continue;
+        }
+
+        // The unseen pieces up to the next seen one, then one seen piece on each side.
+        let mut unseen_end = piece_index + 1;
+        while unseen_end < pieces.len() && words.get(text_of(&pieces[unseen_end])).is_none() {
+            unseen_end += 1;
+        }
+        let span_start = if piece_index > 0 {
+            // Reshape the preceding piece's cached glyphs with the span.
+            glyphs.truncate(previous_piece_start);
+            piece_index - 1
+        } else {
+            piece_index
+        };
+        let span_end = (unseen_end + 1).min(pieces.len());
+        let span = &pieces[span_start..span_end];
+        let last = &span[span.len() - 1];
+
+        let first_glyph = glyphs.len();
+        shape(
+            run_start + span[0].bytes.start..run_start + last.bytes.end,
+            span[0].chars.start,
+            glyphs,
+        );
+        remember_pieces(run_text, span, &glyphs[first_glyph..], sensitive, words);
+
+        let reshaped = &glyphs[first_glyph..];
+        previous_piece_start = first_glyph + last_piece_start(reshaped, last.chars.start);
+        piece_index = span_end;
+    }
+}
+
+/// Where the glyphs of the piece whose characters start at `chars_start` begin in `glyphs`.
+fn last_piece_start(glyphs: &[RawGlyph], chars_start: u32) -> usize {
+    let last_piece_glyphs = glyphs
+        .iter()
+        .rev()
+        .take_while(|glyph| glyph.cluster >= chars_start)
+        .count();
+    glyphs.len() - last_piece_glyphs
+}
+
+/// Remember the glyphs of each piece of `span`, whose clusters count from its first character.
+fn remember_pieces(
+    run_text: &str,
+    span: &[Piece],
+    glyphs: &[RawGlyph],
+    sensitive: &SpaceSensitive,
+    words: &mut WordGlyphs,
+) {
+    // Clusters are monotonic, so each piece's glyphs follow the previous piece's. A piece whose
+    // first glyph does not start its first character shares a cluster with its neighbour, which
+    // the font check should rule out: then nothing in the span is remembered.
+    let mut bounds = Vec::with_capacity(span.len());
+    let mut piece_start = 0;
+    for piece in span {
+        let piece_end =
+            piece_start + glyphs[piece_start..].partition_point(|g| g.cluster < piece.chars.end);
+        if piece_end == piece_start || glyphs[piece_start].cluster != piece.chars.start {
+            return;
+        }
+        bounds.push(piece_start..piece_end);
+        piece_start = piece_end;
+    }
+    if piece_start != glyphs.len() {
+        return;
+    }
+
+    for (piece, range) in span.iter().zip(bounds) {
+        let word = &run_text[piece.bytes.clone()];
+        let edge_glyphs = [glyphs[range.start].id, glyphs[range.end - 1].id];
+        let space_sensitive = edge_glyphs.iter().any(|glyph| sensitive.contains(glyph));
+        if word.len() > word_cache::MAX_WORD_BYTES || space_sensitive {
+            continue;
+        }
+        let word_glyphs: Vec<RawGlyph> = glyphs[range]
+            .iter()
+            .map(|glyph| RawGlyph {
+                cluster: glyph.cluster - piece.chars.start,
+                ..*glyph
+            })
+            .collect();
+        words.insert(word, &word_glyphs);
+    }
 }
 
 #[inline]

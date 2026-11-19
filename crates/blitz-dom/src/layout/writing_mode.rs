@@ -40,9 +40,9 @@ impl BaseDocument {
         if root.has_containment() {
             return wm;
         }
-        root.children
+        root.children()
             .iter()
-            .map(|&child| &self.nodes[child])
+            .map(|child| &self.nodes[child])
             .find(|child| {
                 child
                     .data
@@ -121,8 +121,7 @@ impl LayoutPassState<'_> {
         let node = &self.nodes[dom_node_id(node_id)];
         let placed_by_block_container = !self.is_out_of_flow(node_id)
             && node
-                .layout_parent
-                .get()
+                .layout_parent_id()
                 .map(|parent| self.nodes[parent].taffy_display() == taffy::Display::Block)
                 .unwrap_or(true);
         if placed_by_block_container
@@ -388,13 +387,13 @@ impl BaseDocument {
             current = node.containing_block();
         }
         if !has_vertical {
-            return (pos, *self.nodes[node_id].unrounded_layout());
+            return (pos, self.nodes[node_id].unrounded_layout());
         }
 
-        let root_id = self.try_root_element().map(|root| root.id);
+        let root_id = self.try_root_element().map(|root| root.id());
         let node = &self.nodes[node_id];
         let (mut pos, placer_wm, placer_size) = self.placer_geometry(node, node_id, root_id);
-        let layout = physical_layout(*node.unrounded_layout(), placer_wm, placer_size);
+        let layout = physical_layout(node.unrounded_layout(), placer_wm, placer_size);
         pos.x += layout.location.x - node.scroll_offset().x as f32;
         pos.y += layout.location.y - node.scroll_offset().y as f32;
         (pos, layout)

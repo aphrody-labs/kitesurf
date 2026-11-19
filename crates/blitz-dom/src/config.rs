@@ -72,12 +72,6 @@ pub struct DocumentConfig {
     /// How deeply this document is nested within other documents
     /// (0 for a root document). Used to limit `<iframe>` nesting depth.
     pub subdocument_depth: usize,
-    /// Optional hint for the initial node-slab capacity. When set,
-    /// the document reserves this many node slots up front instead
-    /// of growing the slab by doubling during parse, which avoids
-    /// the power-of-two overshoot (and its wasted memory) on large
-    /// documents. The embedder can estimate this from the source HTML.
-    pub node_capacity_hint: Option<usize>,
 }
 
 impl Default for DocumentConfig {
@@ -97,7 +91,6 @@ impl Default for DocumentConfig {
             incremental: None,
             abort_signal: None,
             subdocument_depth: 0,
-            node_capacity_hint: None,
         }
     }
 }

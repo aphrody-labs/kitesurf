@@ -197,7 +197,7 @@ fn touch_action_pan_axes(doc: &BaseDocument, node_id: NodeId) -> (bool, bool) {
                 break;
             }
         }
-        current = node.parent;
+        current = node.parent_id();
     }
 
     (allow_x, allow_y)
@@ -229,7 +229,7 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
                             if user_select == UserSelect::None {
                                 // Do nothing. Continue with rest of function
                             } else if user_select == UserSelect::Auto {
-                                if let Some(parent) = node.parent {
+                                if let Some(parent) = node.parent_id() {
                                     let node = &doc.nodes[parent];
                                     if let Some(style) = node.primary_styles() {
                                         let user_select = style.clone_user_select();
@@ -332,8 +332,8 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
         return changed;
     }
 
-    let final_layout = el.layout_data().final_layout;
-    if let SpecialElementData::TextInput(ref mut text_input_data) = el.special_data {
+    let final_layout = el.layout_data().final_layout();
+    if let Some(SpecialElementData::TextInput(text_input_data)) = el.special_data_mut() {
         if buttons == MouseEventButtons::None {
             return changed;
         }
@@ -456,7 +456,7 @@ pub(crate) fn handle_pointerdown(
         match node.data.downcast_element() {
             Some(el) if el.has_attr(local_name!("disabled")) => ClickTarget::Disabled,
             Some(el) => {
-                if let SpecialElementData::TextInput(ref text_input_data) = el.special_data {
+                if let SpecialElementData::TextInput(text_input_data) = el.special_data() {
                     let mut content_box_offset = taffy::Point {
                         x: node.final_layout().padding.left + node.final_layout().border.left,
                         y: node.final_layout().padding.top + node.final_layout().border.top,
@@ -520,7 +520,7 @@ pub(crate) fn handle_pointerdown(
             let click_count = doc.click_count;
             let node = &mut doc.nodes[actual_target];
             let el = node.data.downcast_element_mut().unwrap();
-            if let SpecialElementData::TextInput(ref mut text_input_data) = el.special_data {
+            if let Some(SpecialElementData::TextInput(text_input_data)) = el.special_data_mut() {
                 let mut font_ctx = doc.font_ctx.lock().unwrap();
                 let mut driver = text_input_data
                     .editor
@@ -561,11 +561,11 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
     if doc.devtools().highlight_hover {
         let mut node = doc.get_node(target).unwrap();
         if event.button == MouseEventButton::Secondary {
-            if let Some(parent_id) = node.layout_parent.get() {
+            if let Some(parent_id) = node.layout_parent_id() {
                 node = doc.get_node(parent_id).unwrap();
             }
         }
-        doc.debug_log_node(node.id);
+        doc.debug_log_node(node.id());
         doc.devtools_mut().highlight_hover = false;
         return;
     }
@@ -628,7 +628,7 @@ pub(crate) fn handle_click(
             };
 
             let Some(el) = maybe_element else {
-                maybe_node_id = doc.nodes[node_id].parent;
+                maybe_node_id = doc.nodes[node_id].parent_id();
                 continue;
             };
 
@@ -637,7 +637,7 @@ pub(crate) fn handle_click(
                 break 'matched true;
             }
 
-            if let SpecialElementData::TextInput(_) = el.special_data {
+            if let SpecialElementData::TextInput(_) = el.special_data() {
                 break 'matched true;
             }
 
@@ -696,12 +696,12 @@ pub(crate) fn handle_click(
                 // Activating the first <summary> of a <details> element toggles
                 // the details' `open` attribute (expand/collapse).
                 local_name!("summary") => {
-                    if let Some(parent_id) = doc.nodes[node_id].parent {
+                    if let Some(parent_id) = doc.nodes[node_id].parent_id() {
                         let parent = &doc.nodes[parent_id];
                         let is_first_summary = parent
                             .data
                             .is_element_with_tag_name(&local_name!("details"))
-                            && parent.children.iter().copied().find(|&child_id| {
+                            && parent.children().iter().find(|&child_id| {
                                 doc.nodes[child_id]
                                     .data
                                     .is_element_with_tag_name(&local_name!("summary"))
@@ -723,7 +723,7 @@ pub(crate) fn handle_click(
                 // Clicking labels triggers click, and possibly input event, of associated input
                 local_name!("label") => {
                     if let Some(target_node_id) =
-                        doc.label_bound_input_element(node_id).map(|n| n.id)
+                        doc.label_bound_input_element(node_id).map(|n| n.id())
                     {
                         // Apply default click event action for target node
                         let target_node = doc.get_node_mut(target_node_id).unwrap();
@@ -789,12 +789,12 @@ pub(crate) fn handle_click(
                     };
 
                     if files.is_empty() {
-                        el.special_data = SpecialElementData::None;
+                        el.set_special_data(SpecialElementData::None);
                     } else {
-                        el.special_data = SpecialElementData::FileInput(files.into())
+                        el.set_special_data(SpecialElementData::FileInput(files.into()))
                     }
-                    let child_label_id = doc.nodes[node_id].children[1];
-                    let child_text_id = doc.nodes[child_label_id].children[0];
+                    let child_label_id = doc.nodes[node_id].children().get(1).unwrap();
+                    let child_text_id = doc.nodes[child_label_id].children().get(0).unwrap();
                     let text_data = doc.nodes[child_text_id]
                         .text_data_mut()
                         .expect("Text data not found");
@@ -804,7 +804,7 @@ pub(crate) fn handle_click(
             }
 
             // No match. Recurse up to parent.
-            maybe_node_id = doc.nodes[node_id].parent;
+            maybe_node_id = doc.nodes[node_id].parent_id();
         }
 
         // Didn't match anything

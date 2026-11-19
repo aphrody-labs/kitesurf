@@ -20,8 +20,7 @@ use crate::text::DrawTextContext;
 use crate::{CustomWidgetSceneMap, SELECTION_COLOR};
 use anyrender::{PaintScene, Scene, ScenePart};
 use blitz_dom::node::{
-    ListItemLayout, ListItemLayoutPosition, Marker, NodeData, RasterImageData, TextInputData,
-    TextNodeData,
+    ListItemLayout, Marker, NodeData, RasterImageData, TextBrush, TextInputData, TextNodeData,
 };
 use blitz_dom::{BaseDocument, ElementData, Node, NodeId, local_name};
 use blitz_traits::devtools::DevtoolSettings;
@@ -41,6 +40,7 @@ use style::{
 };
 
 use kurbo::{self, Affine, BezPath, Insets, Point, Rect, Shape, Size, Stroke, Vec2};
+use parley::layout::Layout as ParleyLayout;
 use peniko::{self, Fill, ImageData, ImageSampler};
 use style::values::generics::color::GenericColor;
 use taffy::Layout;
@@ -165,7 +165,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             .collect();
 
         let layer_manager = LayerManager::default();
-        let root_element_id = dom.try_root_element().map(|el| el.id);
+        let root_element_id = dom.try_root_element().map(|el| el.id());
 
         Self {
             dom,
@@ -248,7 +248,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         let Some(root_element) = self.dom.as_ref().try_root_element() else {
             return;
         };
-        let root_id = root_element.id;
+        let root_id = root_element.id();
         let bg_width = (self.width as f32).max(root_element.final_layout().size.width);
         let bg_height = (self.height as f32).max(root_element.final_layout().size.height);
 
@@ -271,10 +271,10 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             if root_has_bg {
                 Some(root_element)
             } else {
-                root_element.children.iter().find_map(|id| {
+                root_element.children().iter().find_map(|id| {
                     self.dom
                         .as_ref()
-                        .get_node(*id)
+                        .get_node(id)
                         .filter(|node| node.data.is_element_with_tag_name(&local_name!("body")))
                 })
             }
@@ -287,7 +287,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                     width: bg_width,
                     height: bg_height,
                 },
-                ..*root_element.final_layout()
+                ..root_element.final_layout()
             };
             let canvas_cx = self.element_cx(
                 source,
@@ -447,7 +447,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             padding,
             location,
             ..
-        } = *node.final_layout();
+        } = node.final_layout();
         let box_position = Vec2::new(location.x as f64, location.y as f64) * self.scale;
         let box_size = Size::new(size.width as f64, size.height as f64);
         // Node-local: `screen_transform` applies `box_position` below.
@@ -466,14 +466,14 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         let overflow = *node.scrollable_overflow();
         let transform = parent_style_transform
             * Affine::translate(box_position)
-            * node.transform().as_deref().copied().unwrap_or_default();
+            * node.transform().unwrap_or_default();
 
         let screen_transform = Affine::translate(Vec2 {
             x: -self.initial_x,
             y: -self.initial_y,
         }) * transform;
         let screen_bbox = screen_transform.transform_rect_bbox(overflow.union(border_box));
-        let screen_bbox = match node.rehomed_reach.get() {
+        let screen_bbox = match node.rehomed_reach() {
             Some((x0, y0, x1, y1)) => {
                 let reach = Rect::new(
                     x0 as f64 * self.scale,
@@ -521,7 +521,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         if should_clip
             && clip_area < 0.01
             && overflow_area < 0.01
-            && node.rehomed_reach.get().is_none()
+            && node.rehomed_reach().is_none()
         {
             return;
         }
@@ -533,7 +533,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
 
         // Apply CSS transform property (where transforms are 2d)
 
-        let mut cx = self.element_cx(node, *node.final_layout(), transform, custom_widget_scene);
+        let mut cx = self.element_cx(node, node.final_layout(), transform, custom_widget_scene);
 
         // If this element clips its overflow it establishes a scrollport: narrow the clip
         // rectangle passed to descendants to the visible (clipped) region so that content
@@ -831,7 +831,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                 _ => None,
             },
             text_input: element.text_input_data(),
-            list_item: element.list_item_data.as_deref(),
+            list_item: element.list_item_data(),
             devtools: self.dom.devtools(),
             custom_widget_scene,
         }
@@ -955,7 +955,7 @@ impl ElementCx<'_, '_> {
 
         // scrollbar-color doesn't affect overlay visibility: persistence is
         // UA policy, not author styling.
-        let node_id = self.node.id;
+        let node_id = self.node.id();
         let opacity = self.context.dom.scrollbar_opacity(node_id);
         if opacity == 0.0 {
             return;
@@ -1056,9 +1056,9 @@ impl ElementCx<'_, '_> {
 
     fn draw_inline_layout(&self, scene: &mut impl PaintScene, pos: Point) {
         if self.node.flags.is_inline_root() {
+            let node_id = self.node.id();
             let text_layout = self.element
-                .inline_layout_data
-                .as_ref()
+                .inline_layout_data()
                 .unwrap_or_else(|| {
                     panic!("Tried to render node marked as inline root that does not have an inline layout: {:?}", self.node);
                 });
@@ -1067,47 +1067,42 @@ impl ElementCx<'_, '_> {
                 x: pos.x,
                 y: pos.y + text_layout.block_offset as f64,
             };
+            let layout = text_layout.layout(self.context.dom.tree());
             let transform =
                 self.transform * Affine::translate((pos.x * self.scale, pos.y * self.scale));
 
             crate::text_box_decorations::paint_span_fragment_backgrounds(
                 scene,
-                &text_layout.layout,
+                layout,
                 self.context.dom,
                 transform,
-                self.node.id,
+                node_id,
             );
 
             // Render text selection highlight (if any) using cached selection ranges
-            if let Some(&(sel_start, sel_end)) = self.context.selection_ranges.get(&self.node.id) {
-                crate::text::draw_text_selection(
-                    scene,
-                    &text_layout.layout,
-                    transform,
-                    sel_start,
-                    sel_end,
-                );
+            if let Some(&(sel_start, sel_end)) = self.context.selection_ranges.get(&node_id) {
+                crate::text::draw_text_selection(scene, layout, transform, sel_start, sel_end);
             }
 
             // Render text
             let mut draw_text_context = self.context.draw_text_context.borrow_mut();
             crate::text::stroke_text(
                 scene,
-                text_layout.layout.lines(),
+                layout.lines(),
                 self.context.dom,
                 transform,
                 self.scale,
-                self.node.id,
+                node_id,
                 &mut draw_text_context,
                 None,
             );
 
             crate::text_box_decorations::paint_span_fragment_borders(
                 scene,
-                &text_layout.layout,
+                layout,
                 self.context.dom,
                 transform,
-                self.node.id,
+                node_id,
             );
         }
     }
@@ -1175,7 +1170,7 @@ impl ElementCx<'_, '_> {
                 self.context.dom,
                 transform,
                 self.scale,
-                self.node.id,
+                self.node.id(),
                 &mut draw_text_context,
                 fill_override,
             );
@@ -1183,59 +1178,64 @@ impl ElementCx<'_, '_> {
     }
 
     fn draw_marker(&self, scene: &mut impl PaintScene, pos: Point) {
-        if let Some(ListItemLayout {
-            marker,
-            position: ListItemLayoutPosition::Outside(layout),
-        }) = self.list_item
-        {
-            // Right align and pad the bullet when rendering outside
-            let x_padding = match marker {
-                Marker::Char(_) => 8.0,
-                Marker::String(_) => 0.0,
-            };
-            // Outside markers are placed outside the list item's border box
-            // (`pos` is the origin of its content box)
-            let item_layout = self.node.final_layout();
-            let x_offset = -(layout.full_width() / layout.scale()
-                + x_padding
-                + item_layout.padding.left
-                + item_layout.border.left);
+        let Some(list_item) = self.list_item else {
+            return;
+        };
+        let Some(marker_layout) =
+            list_item.outside_marker_layout(self.context.dom.tree(), self.node.id())
+        else {
+            return;
+        };
 
-            // Align the marker with the baseline of the first line of text in the list item
-            let y_offset = if let Some((text_layout, first_text_line)) = &self
-                .element
-                .inline_layout_data
-                .as_ref()
-                .and_then(|text_layout| Some((text_layout, text_layout.layout.lines().next()?)))
-            {
-                (first_text_line.metrics().baseline
-                    - layout.lines().next().unwrap().metrics().baseline)
-                    / layout.scale()
-                    + text_layout.block_offset
-            } else {
-                0.0
-            };
+        let pos = Point {
+            x: pos.x + self.marker_x_offset(&list_item.marker, &marker_layout),
+            y: pos.y + self.marker_baseline_offset(&marker_layout),
+        };
+        let transform =
+            self.transform * Affine::translate((pos.x * self.scale, pos.y * self.scale));
 
-            let pos = Point {
-                x: pos.x + x_offset as f64,
-                y: pos.y + y_offset as f64,
-            };
+        let mut draw_text_context = self.context.draw_text_context.borrow_mut();
+        crate::text::stroke_text(
+            scene,
+            marker_layout.lines(),
+            self.context.dom,
+            transform,
+            self.scale,
+            self.node.id(),
+            &mut draw_text_context,
+            None,
+        );
+    }
 
-            let transform =
-                self.transform * Affine::translate((pos.x * self.scale, pos.y * self.scale));
+    /// Left offset of an outside marker from the list item's content box origin:
+    /// markers sit outside the item's border box, right-aligned, with a gap after
+    /// a char bullet so it does not touch the text.
+    fn marker_x_offset(&self, marker: &Marker, marker_layout: &ParleyLayout<TextBrush>) -> f64 {
+        let x_padding = match marker {
+            Marker::Char(_) => 8.0,
+            Marker::String(_) => 0.0,
+        };
+        let item_layout = self.node.final_layout();
+        let marker_width = marker_layout.full_width() / marker_layout.scale();
+        let inset = marker_width + x_padding + item_layout.padding.left + item_layout.border.left;
+        -f64::from(inset)
+    }
 
-            let mut draw_text_context = self.context.draw_text_context.borrow_mut();
-            crate::text::stroke_text(
-                scene,
-                layout.lines(),
-                self.context.dom,
-                transform,
-                self.scale,
-                self.node.id,
-                &mut draw_text_context,
-                None,
-            );
-        }
+    /// Top offset of an outside marker from the list item's content box origin:
+    /// the marker's first line sits on the baseline of the item's first text
+    /// line. Zero when the item has no shaped text.
+    fn marker_baseline_offset(&self, marker_layout: &ParleyLayout<TextBrush>) -> f64 {
+        let Some(text_layout) = self.element.inline_layout_data() else {
+            return 0.0;
+        };
+        let item_layout = text_layout.layout(self.context.dom.tree());
+        let Some(item_baseline) = item_layout.first_baseline() else {
+            return 0.0;
+        };
+        let marker_baseline = marker_layout.first_baseline().unwrap();
+        // The baselines are in scaled pixels; block_offset is in CSS pixels.
+        let baseline_delta = item_baseline - marker_baseline;
+        (baseline_delta / marker_layout.scale() + text_layout.block_offset) as f64
     }
 
     fn draw_children(
@@ -1247,9 +1247,9 @@ impl ElementCx<'_, '_> {
     ) {
         // Negative z_index hoisted nodes
 
-        if let Some(hoisted) = &self.node.stacking_context {
+        if let Some(hoisted) = self.node.stacking_context() {
             for hoisted_child in hoisted.neg_z_hoisted_children() {
-                let position = hoisted_child.position(self.node.tree(), self.node.id);
+                let position = hoisted_child.position(self.node.tree(), self.node.id());
                 self.render_hoisted_child(
                     scene,
                     hoisted_child.node_id,
@@ -1261,11 +1261,11 @@ impl ElementCx<'_, '_> {
         }
 
         // Regular children
-        if let Some(children) = &*self.node.paint_children.borrow() {
-            for child_id in children {
+        if let Some(children) = self.node.paint_children() {
+            for child_id in children.iter() {
                 let child = &self.context.dom.as_ref().tree()[*child_id];
-                let child_transform = match child.paint_parent_override.get() {
-                    Some(parent) if parent == self.node.id => {
+                let child_transform = match child.paint_parent_override() {
+                    Some(parent) if parent == self.node.id() => {
                         if skip_rehomed {
                             continue;
                         }
@@ -1282,7 +1282,7 @@ impl ElementCx<'_, '_> {
                     // A fixed box contained by a transformed ancestor scrolls with it
                     // like any out-of-flow box.
                     _ if child.taffy_position() == taffy::Position::Fixed
-                        && Some(self.node.id) == self.context.root_element_id =>
+                        && Some(self.node.id()) == self.context.root_element_id =>
                     {
                         let scroll = self.context.dom.as_ref().tree().fixed_anchor_scroll();
                         parent_style_transform.pre_translate(kurbo::Vec2 {
@@ -1297,9 +1297,9 @@ impl ElementCx<'_, '_> {
         }
 
         // Positive z_index hoisted nodes
-        if let Some(hoisted) = &self.node.stacking_context {
+        if let Some(hoisted) = self.node.stacking_context() {
             for hoisted_child in hoisted.pos_z_hoisted_children() {
-                let position = hoisted_child.position(self.node.tree(), self.node.id);
+                let position = hoisted_child.position(self.node.tree(), self.node.id());
                 self.render_hoisted_child(
                     scene,
                     hoisted_child.node_id,
@@ -1366,7 +1366,7 @@ impl ElementCx<'_, '_> {
         let mut chain = Vec::new();
         let mut cursor = tree.get(child_id).and_then(|node| node.containing_block());
         while let Some(id) = cursor {
-            if id == self.node.id {
+            if id == self.node.id() {
                 break;
             }
             let node = tree.get(id)?;
@@ -1383,7 +1383,9 @@ impl ElementCx<'_, '_> {
             let origin = offset + Vec2::new(layout.location.x as f64, layout.location.y as f64);
             let scroll = node.scroll_offset();
             offset = origin - Vec2::new(scroll.x, scroll.y);
-            if self.context.root_element_id == Some(node.id) {
+            // `node` is a `&&Node`, so `TElement::id` (also in scope) wins method
+            // resolution; name the node's own `id` explicitly.
+            if self.context.root_element_id == Some(Node::id(node)) {
                 continue;
             }
             let Some(styles) = node.primary_styles() else {
@@ -1422,15 +1424,15 @@ impl ElementCx<'_, '_> {
         parent_style_transform: Affine,
         clip_rect: Rect,
     ) {
-        let Some(children) = &*self.node.paint_children.borrow() else {
+        let Some(children) = self.node.paint_children() else {
             return;
         };
-        for child_id in children {
+        for child_id in children.iter() {
             let child = &self.context.dom.as_ref().tree()[*child_id];
-            if child.paint_parent_override.get() != Some(self.node.id) {
+            if child.paint_parent_override() != Some(self.node.id()) {
                 continue;
             }
-            let translation = child.rehomed_paint_translate(self.node.id);
+            let translation = child.rehomed_paint_translate(self.node.id());
             let transform = parent_style_transform.pre_translate(kurbo::Vec2 {
                 x: translation.x as f64 * self.scale,
                 y: translation.y as f64 * self.scale,

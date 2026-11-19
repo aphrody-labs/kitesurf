@@ -138,7 +138,7 @@ impl<'a> ImageLayerStyles<'a> {
 impl ElementCx<'_, '_> {
     pub(super) fn draw_background(&self, scene: &mut impl PaintScene) {
         let bg_styles = &self.style.get_background();
-        let image_data = &self.element.background_images;
+        let image_data = self.element.background_images();
         let layer_count = bg_styles.background_image.0.len();
 
         // The background color is clipped by the clip of the last layer in the list
@@ -232,7 +232,7 @@ impl ElementCx<'_, '_> {
     /// `border-spacing` between them, nor where a row has no cell), so they are
     /// painted cell by cell.
     pub(super) fn draw_table_row_backgrounds(&self, scene: &mut impl PaintScene) {
-        let SpecialElementData::TableRoot(table) = &self.element.special_data else {
+        let SpecialElementData::TableRoot(table) = self.element.special_data() else {
             return;
         };
 
@@ -377,12 +377,12 @@ impl ElementCx<'_, '_> {
     /// `will-change: transform`, both of which should also degrade `fixed`
     /// to `scroll` (see WPT css/css-transforms/transform-fixed-bg-005/008)
     fn is_transformed(&self) -> bool {
-        let mut current = Some(self.node.id);
+        let mut current = Some(self.node.id());
         while let Some(node) = current.and_then(|id| self.context.dom.get_node(id)) {
             if node.transform().is_some() {
                 return true;
             }
-            current = node.parent;
+            current = node.parent_id();
         }
         false
     }

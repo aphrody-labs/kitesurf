@@ -344,7 +344,11 @@ impl<B: Brush> TreeStyleBuilder<B> {
             });
         }
 
-        core::mem::take(&mut self.text)
+        // An exact copy, keeping the buffer for the next paragraph: taking it made every build
+        // regrow its text by doubling, and the layout keeps the text for the paragraph's life.
+        let text = String::from(self.text.as_str());
+        self.text.clear();
+        text
     }
 }
 

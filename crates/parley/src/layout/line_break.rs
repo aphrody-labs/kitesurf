@@ -5,6 +5,9 @@
 
 use alloc::vec::Vec;
 
+mod summary;
+pub use summary::{BreakSummary, SummaryLine, SummaryLines};
+
 #[cfg(feature = "libm")]
 #[allow(unused_imports)]
 use core_maths::CoreFloat;
@@ -46,7 +49,7 @@ struct TabAction {
 struct LineLayout {
     lines: Vec<LineData>,
     line_items: Vec<LineItemData>,
-    aligned_subtree_offsets: Vec<AlignedSubtreeOffset>,
+    aligned_subtree_offsets: thin_vec::ThinVec<AlignedSubtreeOffset>,
 }
 
 impl LineLayout {
@@ -1551,9 +1554,11 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                 let text = run.range.byte_range.end;
                 // The empty run carries the style of the newline that produced this line, so the
                 // line is sized by that style's span box (and its ancestors), not just the strut.
-                let style_index = self.layout.data.shaped_text.shaped_clusters()
-                    [cluster as usize - 1]
-                    .style_index;
+                let style_index = self
+                    .layout
+                    .data
+                    .shaped_text
+                    .cluster_style_index(cluster - 1);
                 self.state.line.box_metrics.add_text(
                     index,
                     index,
@@ -1848,6 +1853,8 @@ impl<B: Brush> Drop for BreakLines<'_, B> {
 
         // Save the computed lines to the layout
         self.lines.swap(&mut self.layout.data);
+        self.layout.data.lines.shrink_to_fit();
+        self.layout.data.line_items.shrink_to_fit();
     }
 }
 
@@ -1924,18 +1931,12 @@ fn commit_line<B: Brush>(
                 // aligned to `Atom`s, i.e., line bounds are always grapheme bounds.
                 let slice = shaped_text.run_slice(item.index as u32);
                 let item_text_range = if cluster_range.is_empty() {
-                    let char_pos = shaped_clusters[cluster_range.start as usize]
-                        .chars_range()
-                        .start;
+                    let char_pos = slice.shaped_cluster_char_range(cluster_range.start).start;
                     let text_pos = slice.text_byte_at(char_pos);
                     text_pos..text_pos
                 } else {
-                    let char_range = shaped_clusters[cluster_range.start as usize]
-                        .chars_range()
-                        .start
-                        ..shaped_clusters[cluster_range.end as usize - 1]
-                            .chars_range()
-                            .end;
+                    let char_range = slice.shaped_cluster_char_range(cluster_range.start).start
+                        ..slice.shaped_cluster_char_range(cluster_range.end - 1).end;
                     slice.text_byte_range(char_range)
                 };
 
@@ -2236,8 +2237,8 @@ fn hanging_whitespace<B: Brush>(
                     if in_conditional_suffix && whitespace != Whitespace::Newline {
                         // The atom hangs from its logical end, so use the last cluster's style to
                         // decide whether it hangs conditionally.
-                        let last_cluster = atom.shaped_clusters().last().unwrap();
-                        if layout.data.styles[last_cluster.style_index as usize]
+                        let last_cluster = atom.shaped_clusters_range().end - 1;
+                        if layout.data.styles[slice.cluster_style_index(last_cluster) as usize]
                             .white_space_collapse
                             == WhiteSpaceCollapse::Preserve
                         {

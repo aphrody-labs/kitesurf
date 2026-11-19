@@ -64,6 +64,8 @@ version = "=0.3.0-beta.4"
 default-features = false
 
 [dependencies.blitz-traits]
+package = "browser-blitz-traits"
+path = "../blitz-traits"
 version = "=0.3.0-beta.4"
 default-features = false
 

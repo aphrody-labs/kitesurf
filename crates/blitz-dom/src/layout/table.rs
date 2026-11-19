@@ -53,6 +53,9 @@ pub struct TableContext {
     pub paint_grid_info: AtomicRefCell<Option<DetailedGridInfo<Atom>>>,
     pub border_style: Option<ServoArc<Border>>,
     pub border_collapse: BorderCollapse,
+    /// The writing mode and layout algorithm the cells' grid styles are rebuilt with
+    wm: WritingMode,
+    is_fixed: bool,
     /// Backing storage for `calc()` track sizes synthesised by the table layout code.
     /// Taffy stores calc values as raw pointers, so these must outlive the `style`.
     #[allow(dead_code)]
@@ -60,7 +63,10 @@ pub struct TableContext {
     caption_margin_adjustments: Vec<Arc<CaptionMarginAdjustment>>,
 }
 
+// Taffy's CompactLength keeps a tag in the low three bits of a calc pointer, and this is passed
+// as one, so it must be 8-aligned on 32-bit targets too rather than relying on the allocator.
 #[derive(Debug)]
+#[repr(align(8))]
 struct CaptionMarginAdjustment {
     value: taffy::LengthPercentageAuto,
     spacing: f32,
@@ -112,9 +118,30 @@ pub struct TableCell {
     pub row: u16,
     /// Index of the column the cell originates in
     pub column: u16,
-    style: taffy::Style<Atom>,
-    _style_source: ServoArc<ComputedValues>,
-    is_caption: bool,
+    /// The cell's computed style. Its grid style is rebuilt from this on each read rather than
+    /// kept: a converted `taffy::Style` costs about 400 bytes per cell.
+    style_source: ServoArc<ComputedValues>,
+    placement: CellPlacement,
+}
+
+#[derive(Debug, Clone)]
+enum CellPlacement {
+    /// A `table-cell` box starting at grid row line `row_line`
+    Cell {
+        row_line: i16,
+        rowspan: u16,
+        colspan: u16,
+    },
+    /// An anonymous cell around non-table content
+    Anonymous { row_line: i16 },
+    /// A caption keeps its style: its margins point into the table's margin adjustments
+    Caption(Box<taffy::Style<Atom>>),
+}
+
+impl TableCell {
+    fn is_caption(&self) -> bool {
+        matches!(self.placement, CellPlacement::Caption(_))
+    }
 }
 
 /// Tracks the current column position while walking the table's cells, so that
@@ -215,7 +242,7 @@ impl TableRow {
 fn table_wm(doc: &BaseDocument, table_root_node_id: NodeId) -> WritingMode {
     #[cfg(feature = "writing-mode")]
     {
-        if doc.try_root_element().map(|root| root.id) == Some(table_root_node_id) {
+        if doc.try_root_element().map(|root| root.id()) == Some(table_root_node_id) {
             doc.root_layout_wm(table_root_node_id)
         } else {
             doc.nodes[table_root_node_id].writing_mode()
@@ -230,6 +257,65 @@ fn table_wm(doc: &BaseDocument, table_root_node_id: NodeId) -> WritingMode {
 /// Convert a table part's style into the table's writing mode
 fn table_taffy_style(style: &ComputedValues, table_wm: WritingMode) -> taffy::Style<Atom> {
     stylo_taffy::to_taffy_style_in(style, table_wm)
+}
+
+/// A `table-cell` box's style before grid placement: the parts column sizing reads.
+fn table_cell_style(
+    style: &ComputedValues,
+    table_wm: WritingMode,
+    is_fixed: bool,
+    border_collapse: BorderCollapse,
+) -> taffy::Style<Atom> {
+    let mut style = table_taffy_style(style, table_wm);
+    // In the collapsed borders model the borders are laid out as gutters between
+    // the cells (see the table's `gap`) rather than as part of the cells
+    if border_collapse == BorderCollapse::Collapse {
+        style.border = taffy::Rect::ZERO.map(style_helpers::length);
+    }
+    // In the fixed table layout algorithm the widths of columns are not
+    // affected by cell contents, so cells must not impose a min-content
+    // floor on their tracks.
+    if is_fixed {
+        style.min_size.width = style_helpers::length(0.0);
+    }
+    style
+}
+
+/// Places a grid item at `row_line`, spanning `rowspan` rows and `colspan` columns.
+fn place_in_table_grid(style: &mut taffy::Style<Atom>, row_line: i16, rowspan: u16, colspan: u16) {
+    // Let Taffy auto-place the column. Combined with
+    // `grid_auto_flow: RowDense` set on the table root, each cell
+    // scans from the first track in its row for a free position,
+    // which makes cells automatically skip columns occupied by
+    // rowspan cells from earlier rows.
+    style.grid_column = taffy::Line {
+        start: style_helpers::auto(),
+        end: style_helpers::span(colspan),
+    };
+    style.grid_row = taffy::Line {
+        start: style_helpers::line(row_line),
+        end: style_helpers::span(rowspan),
+    };
+}
+
+/// Places a `table-cell` box's style in the table grid.
+fn place_table_cell(
+    mut style: taffy::Style<Atom>,
+    row_line: i16,
+    rowspan: u16,
+    colspan: u16,
+) -> taffy::Style<Atom> {
+    // The margin properties do not apply to table-internal elements
+    style.margin = taffy::Rect::ZERO.map(style_helpers::length);
+    place_in_table_grid(&mut style, row_line, rowspan, colspan);
+    style.size.width = style_helpers::auto();
+    style
+}
+
+/// Places an anonymous cell's style in the table grid.
+fn place_anonymous_cell(mut style: taffy::Style<Atom>, row_line: i16) -> taffy::Style<Atom> {
+    place_in_table_grid(&mut style, row_line, 1, 1);
+    style
 }
 
 fn side_width(width: app_units::Au, style: BorderStyle) -> f32 {
@@ -285,7 +371,7 @@ pub(crate) fn build_table_context(
     let wm = table_wm(doc, table_root_node_id);
     let root_node = &mut doc.nodes[table_root_node_id];
 
-    let children = std::mem::take(&mut root_node.children);
+    let children = root_node.take_detached_children();
 
     let Some(stylo_styles) = root_node.primary_styles() else {
         panic!("Ignoring table because it has no styles");
@@ -316,7 +402,7 @@ pub(crate) fn build_table_context(
 
     let mut columns: Vec<TableColumn> = Vec::new();
     let mut column_sizes: Vec<taffy::TrackSizingFunction> = Vec::new();
-    for child_id in children.iter().copied() {
+    for child_id in children.ids() {
         collect_columns(doc, child_id, wm, &mut columns, &mut column_sizes);
     }
     // Percentage column widths only take effect in the fixed table layout algorithm
@@ -344,7 +430,7 @@ pub(crate) fn build_table_context(
     };
     let mut stray_run = false;
     for order in 0..3 {
-        for child_id in children.iter().copied() {
+        for child_id in children.ids() {
             if row_group_order(doc, child_id) != order {
                 continue;
             }
@@ -422,20 +508,23 @@ pub(crate) fn build_table_context(
     }
     let column_count = num_columns.max(1);
     let mut caption_margin_adjustments = Vec::new();
-    for caption in cells.iter_mut().filter(|cell| cell.is_caption) {
-        caption.style.grid_column = taffy::Line {
+    for cell in cells.iter_mut() {
+        let CellPlacement::Caption(caption) = &mut cell.placement else {
+            continue;
+        };
+        caption.grid_column = taffy::Line {
             start: style_helpers::line(1),
             end: style_helpers::span(column_count),
         };
         if border_collapse == BorderCollapse::Separate {
             let spacing_x = border_spacing.width.px();
-            caption.style.margin.left = compensate_caption_margin(
-                caption.style.margin.left,
+            caption.margin.left = compensate_caption_margin(
+                caption.margin.left,
                 spacing_x,
                 &mut caption_margin_adjustments,
             );
-            caption.style.margin.right = compensate_caption_margin(
-                caption.style.margin.right,
+            caption.margin.right = compensate_caption_margin(
+                caption.margin.right,
                 spacing_x,
                 &mut caption_margin_adjustments,
             );
@@ -508,13 +597,16 @@ pub(crate) fn build_table_context(
         };
     }
 
+    // Doubling growth leaves slack that otherwise lives until paint.
+    cells.shrink_to_fit();
+    rows.shrink_to_fit();
     let layout_children = cells
         .iter()
         .map(|cell| cell.node_id)
         .chain(oof_children.iter().map(|(node_id, _)| *node_id))
         .collect();
     let root_node = &mut doc.nodes[table_root_node_id];
-    root_node.children = children;
+    root_node.restore_detached_children(children);
 
     (
         TableContext {
@@ -527,6 +619,8 @@ pub(crate) fn build_table_context(
             computed_grid_info: AtomicRefCell::new(None),
             paint_grid_info: AtomicRefCell::new(None),
             border_collapse,
+            wm,
+            is_fixed,
             border_style: first_cell_border,
             calc_values,
             caption_margin_adjustments,
@@ -556,11 +650,11 @@ fn collect_columns(
     match display.inside() {
         DisplayInside::TableColumnGroup => {
             let first_column = columns.len();
-            let children = std::mem::take(&mut doc.nodes[node_id].children);
-            for child_id in children.iter().copied() {
+            let children = doc.nodes[node_id].take_detached_children();
+            for child_id in children.ids() {
                 collect_columns(doc, child_id, wm, columns, column_sizes);
             }
-            doc.nodes[node_id].children = children;
+            doc.nodes[node_id].restore_detached_children(children);
             for column in &mut columns[first_column..] {
                 column.group.get_or_insert(node_id);
             }
@@ -663,9 +757,9 @@ fn collect_table_cells(
         | DisplayInside::Contents => {
             let first_row = rows.len();
             *stray_run = false;
-            let children = std::mem::take(&mut doc.nodes[node_id].children);
+            let children = doc.nodes[node_id].take_detached_children();
             let mut group_stray = false;
-            for child_id in children.iter().copied() {
+            for child_id in children.ids() {
                 doc.nodes[child_id]
                     .remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                 collect_table_cells(
@@ -686,7 +780,7 @@ fn collect_table_cells(
                     &mut group_stray,
                 );
             }
-            doc.nodes[node_id].children = children;
+            doc.nodes[node_id].restore_detached_children(children);
             if display.inside() != DisplayInside::Contents {
                 for row in &mut rows[first_row..] {
                     row.group.get_or_insert(node_id);
@@ -710,9 +804,9 @@ fn collect_table_cells(
                 is_constrained: height.is_some(),
             });
 
-            let children = std::mem::take(&mut doc.nodes[node_id].children);
+            let children = doc.nodes[node_id].take_detached_children();
             let mut row_stray = false;
-            for child_id in children.iter().copied() {
+            for child_id in children.ids() {
                 collect_table_cells(
                     doc,
                     child_id,
@@ -731,7 +825,7 @@ fn collect_table_cells(
                     &mut row_stray,
                 );
             }
-            doc.nodes[node_id].children = children;
+            doc.nodes[node_id].restore_detached_children(children);
         }
         DisplayInside::TableCell => {
             // A cell outside any real row opens an implicit (anonymous)
@@ -753,25 +847,12 @@ fn collect_table_cells(
                 .and_then(|val| val.parse::<u16>().ok())
                 .map(|v| v.clamp(1, 65534))
                 .unwrap_or(1);
-            let mut style = table_taffy_style(stylo_style, wm);
+            let style = table_cell_style(stylo_style, wm, is_fixed, border_collapse);
             let style_source = ServoArc::clone(&**stylo_style);
             let col = cursor.next_free();
 
-            // In the collapsed borders model the borders are laid out as gutters between
-            // the cells (see the table's `gap`) rather than as part of the cells
-            if border_collapse == BorderCollapse::Collapse {
-                style.border = taffy::Rect::ZERO.map(style_helpers::length);
-            }
-
             if first_cell_border.is_none() {
                 *first_cell_border = Some(stylo_style.clone_border());
-            }
-
-            // In the fixed table layout algorithm the widths of columns are not
-            // affected by cell contents, so cells must not impose a min-content
-            // floor on their tracks.
-            if is_fixed {
-                style.min_size.width = style_helpers::length(0.0);
             }
 
             // Column widths from `<col>` elements take precedence over cell widths
@@ -826,36 +907,22 @@ fn collect_table_cells(
                 }
             }
 
-            // The margin properties do not apply to table-internal elements
-            style.margin = taffy::Rect::ZERO.map(style_helpers::length);
-
-            // Let Taffy auto-place the column. Combined with
-            // `grid_auto_flow: RowDense` set on the table root, each cell
-            // scans from the first track in its row for a free position,
-            // which makes cells automatically skip columns occupied by
-            // rowspan cells from earlier rows.
-            style.grid_column = taffy::Line {
-                start: style_helpers::auto(),
-                end: style_helpers::span(colspan),
-            };
-            style.grid_row = taffy::Line {
-                start: style_helpers::line(*row as i16),
-                end: style_helpers::span(rowspan),
-            };
             if rowspan == 1 && style.size.height.tag() == taffy::CompactLength::LENGTH_TAG {
                 if let Some(row) = rows.last_mut() {
                     row.is_constrained = true;
                 }
             }
 
-            style.size.width = style_helpers::auto();
             cells.push(TableCell {
                 node_id,
                 row: row.saturating_sub(1),
                 column: col,
-                style,
-                _style_source: style_source,
-                is_caption: false,
+                style_source,
+                placement: CellPlacement::Cell {
+                    row_line: *row as i16,
+                    rowspan,
+                    colspan,
+                },
             });
 
             cursor.place(colspan, rowspan);
@@ -878,7 +945,6 @@ fn collect_table_cells(
                 rows.push(TableRow::anonymous());
             }
             let stylo_style = &node.primary_styles().unwrap();
-            let mut style = table_taffy_style(stylo_style, wm);
             let style_source = ServoArc::clone(&**stylo_style);
             let col = cursor.next_free();
             let is_caption = display.outside() == DisplayOutside::TableCaption;
@@ -891,21 +957,19 @@ fn collect_table_cells(
                 columns.resize(col as usize, style_helpers::auto());
                 columns.push(style_helpers::auto());
             }
-            style.grid_column = taffy::Line {
-                start: style_helpers::auto(),
-                end: style_helpers::span(1),
-            };
-            style.grid_row = taffy::Line {
-                start: style_helpers::line(*row as i16),
-                end: style_helpers::span(1),
+            let row_line = *row as i16;
+            let placement = if is_caption {
+                let style = table_taffy_style(&style_source, wm);
+                CellPlacement::Caption(Box::new(place_anonymous_cell(style, row_line)))
+            } else {
+                CellPlacement::Anonymous { row_line }
             };
             cells.push(TableCell {
                 node_id,
                 row: row.saturating_sub(1),
                 column: col,
-                style,
-                _style_source: style_source,
-                is_caption,
+                style_source,
+                placement,
             });
             cursor.place(1, 1);
         }
@@ -990,7 +1054,7 @@ impl taffy::LayoutPartialTree for TableTreeWrapper<'_, '_> {
         let cell = &self.ctx.cells[usize::from(node_id)];
         // CSS 2.2 §17.5.2: captions contribute their minimum width to an
         // auto-width table, not their unwrapped max-content width.
-        if cell.is_caption
+        if cell.is_caption()
             && inputs.axis == taffy::RequestedAxis::Horizontal
             && inputs.known_dimensions.width.is_none()
             && inputs.available_space.width == taffy::AvailableSpace::MaxContent
@@ -1009,7 +1073,7 @@ impl taffy::LayoutGridContainer for TableTreeWrapper<'_, '_> {
         Self: 'a;
 
     type GridItemStyle<'a>
-        = &'a taffy::Style<Atom>
+        = taffy::Style<Atom>
     where
         Self: 'a;
 
@@ -1018,7 +1082,23 @@ impl taffy::LayoutGridContainer for TableTreeWrapper<'_, '_> {
     }
 
     fn get_grid_child_style(&self, child_node_id: taffy::NodeId) -> Self::GridItemStyle<'_> {
-        &self.ctx.cells[usize::from(child_node_id)].style
+        let ctx = &*self.ctx;
+        let cell = &ctx.cells[usize::from(child_node_id)];
+        match &cell.placement {
+            CellPlacement::Cell {
+                row_line,
+                rowspan,
+                colspan,
+            } => {
+                let style =
+                    table_cell_style(&cell.style_source, ctx.wm, ctx.is_fixed, ctx.border_collapse);
+                place_table_cell(style, *row_line, *rowspan, *colspan)
+            }
+            CellPlacement::Anonymous { row_line } => {
+                place_anonymous_cell(table_taffy_style(&cell.style_source, ctx.wm), *row_line)
+            }
+            CellPlacement::Caption(style) => taffy::Style::clone(style),
+        }
     }
 
     fn set_detailed_grid_info(

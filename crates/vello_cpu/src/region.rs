@@ -120,13 +120,17 @@ impl<'a> Regions<'a> {
         target: &'a mut PixmapMut<'_>,
         scene_size: (u16, u16),
         offset: (u16, u16),
+        source_y: u16,
         row_count: usize,
     ) -> Self {
         let (dst_x, dst_y) = offset;
 
         let (scene_width, scene_height) = scene_size;
         let width = scene_width.min(target.width().saturating_sub(dst_x));
-        let height = scene_height.min(target.height().saturating_sub(dst_y));
+        // Rows above `source_y` belong to earlier bands and are not rendered here.
+        let height = scene_height
+            .saturating_sub(source_y)
+            .min(target.height().saturating_sub(dst_y));
 
         if width == 0 || height == 0 {
             return Self {
@@ -134,7 +138,12 @@ impl<'a> Regions<'a> {
             };
         }
 
-        let row_count = row_count.min(usize::from(height).div_ceil(Tile::HEIGHT as usize));
+        // Regions keep absolute scene row indices, so the rows above `source_y` are dropped from
+        // the bucketer's row count instead of being renumbered.
+        let first_row = usize::from(source_y / Tile::HEIGHT);
+        let row_count = row_count
+            .saturating_sub(first_row)
+            .min(usize::from(height).div_ceil(Tile::HEIGHT as usize));
         let stride = usize::from(target.width()) * COLOR_COMPONENTS;
         let x_offset = usize::from(dst_x) * COLOR_COMPONENTS;
         let render_bytes = usize::from(height) * stride;
@@ -147,8 +156,9 @@ impl<'a> Regions<'a> {
             let row_height = (height - row_y).min(Tile::HEIGHT);
             let band_len = usize::from(row_height) * stride;
             let (buffer, rest) = remaining.split_at_mut(band_len);
+            let scene_row = first_row + row_idx;
             regions.push(Region::from_rows(
-                row_idx, width, row_height, stride, x_offset, buffer,
+                scene_row, width, row_height, stride, x_offset, buffer,
             ));
             remaining = rest;
         }
@@ -178,7 +188,7 @@ mod tests {
         for offset in [(20, 0), (0, 20)] {
             let mut pixmap = Pixmap::new(10, 10);
             let mut pixmap = pixmap.as_mut();
-            let _regions = Regions::new(&mut pixmap, (4, 4), offset, 1);
+            let _regions = Regions::new(&mut pixmap, (4, 4), offset, 0, 1);
         }
     }
 }

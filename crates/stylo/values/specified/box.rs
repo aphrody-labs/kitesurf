@@ -326,8 +326,10 @@ impl Display {
     }
 
     /// Make a display enum value from <display-outside> and <display-inside> values.
+    ///
+    /// Every `Display` round-trips: `from3(d.outside(), d.inside(), d.is_list_item()) == d`.
     #[inline]
-    fn from3(outside: DisplayOutside, inside: DisplayInside, list_item: bool) -> Self {
+    pub fn from3(outside: DisplayOutside, inside: DisplayInside, list_item: bool) -> Self {
         let v = Self::new(outside, inside);
         if !list_item {
             return v;

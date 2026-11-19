@@ -293,23 +293,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6099cdc01846bc367c4e7dd630dc5966dccf36b652fae7a74e17b640411a91b2"
 
 [[package]]
-name = "blitz-traits"
-version = "0.3.0-beta.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d339c3ff7fe8bed623e27695a4c15dd1ec8faa9bf9158b7475bf180280e4018c"
-dependencies = [
- "atomic_refcell",
- "bitflags 2.13.2",
- "bytes",
- "cursor-icon",
- "http",
- "keyboard-types",
- "serde",
- "smol_str",
- "url",
-]
-
-[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -447,8 +430,8 @@ dependencies = [
  "app_units",
  "atomic_refcell",
  "bitflags 2.13.2",
- "blitz-traits",
  "browser-anyrender",
+ "browser-blitz-traits",
  "browser-parley",
  "browser-selectors",
  "browser-stylo",
@@ -458,6 +441,7 @@ dependencies = [
  "browser-taffy",
  "browser-usvg",
  "color",
+ "compact_str",
  "cssparser 0.38.0",
  "cursor-icon",
  "debug_timer",
@@ -477,7 +461,6 @@ dependencies = [
  "percent-encoding",
  "rayon",
  "skrifa 0.44.0",
- "slotmap",
  "smallvec",
  "stylo_static_prefs",
  "svgtypes",
@@ -494,8 +477,8 @@ dependencies = [
 name = "browser-blitz-html"
 version = "0.3.0-beta.4"
 dependencies = [
- "blitz-traits",
  "browser-blitz-dom",
+ "browser-blitz-traits",
  "html5ever",
  "tracing",
  "xml5ever",
@@ -505,10 +488,10 @@ dependencies = [
 name = "browser-blitz-paint"
 version = "0.3.0-beta.4"
 dependencies = [
- "blitz-traits",
  "browser-anyrender",
  "browser-anyrender_svg",
  "browser-blitz-dom",
+ "browser-blitz-traits",
  "browser-parley",
  "browser-stylo",
  "browser-taffy",
@@ -521,6 +504,21 @@ dependencies = [
  "skrifa 0.44.0",
  "smallvec",
  "tracing",
+]
+
+[[package]]
+name = "browser-blitz-traits"
+version = "0.3.0-beta.4"
+dependencies = [
+ "atomic_refcell",
+ "bitflags 2.13.2",
+ "bytes",
+ "cursor-icon",
+ "http",
+ "keyboard-types",
+ "serde",
+ "smol_str",
+ "url",
 ]
 
 [[package]]
@@ -692,6 +690,7 @@ dependencies = [
  "parlance",
  "skrifa 0.44.0",
  "smallvec",
+ "thin-vec",
 ]
 
 [[package]]
@@ -710,6 +709,7 @@ dependencies = [
  "parley_data",
  "parley_emoji",
  "skrifa 0.44.0",
+ "thin-vec",
 ]
 
 [[package]]
@@ -2981,12 +2981,12 @@ name = "kitesurf-core"
 version = "0.0.1"
 dependencies = [
  "app_units",
- "blitz-traits",
  "browser-anyrender",
  "browser-anyrender_vello_cpu",
  "browser-blitz-dom",
  "browser-blitz-html",
  "browser-blitz-paint",
+ "browser-blitz-traits",
  "browser-boa_engine",
  "browser-jpeg-encoder",
  "browser-parley",
@@ -3002,6 +3002,7 @@ dependencies = [
  "cssparser 0.38.0",
  "encoding_rs",
  "euclid",
+ "fdeflate",
  "flate2",
  "foldhash 0.2.0",
  "futures-util",
@@ -3019,6 +3020,7 @@ dependencies = [
  "png 0.18.1",
  "ratatui",
  "rustc-hash 2.1.3",
+ "ryu-js",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -4602,6 +4604,8 @@ dependencies = [
  "browser-jpeg-encoder",
  "browser-vello_cpu",
  "console_error_panic_hook",
+ "crc32fast",
+ "fdeflate",
  "flate2",
  "foldhash 0.2.0",
  "getrandom 0.2.17",
@@ -4755,6 +4759,8 @@ dependencies = [
  "browser-anyrender_vello_cpu",
  "browser-jpeg-encoder",
  "browser-vello_cpu",
+ "crc32fast",
+ "fdeflate",
  "flate2",
  "foldhash 0.2.0",
  "image",

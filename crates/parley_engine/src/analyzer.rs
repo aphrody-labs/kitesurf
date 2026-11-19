@@ -3,6 +3,7 @@
 
 //! The analyzer API.
 
+use alloc::vec::Vec;
 use core::ops::Range;
 
 use parlance::{BaseDirection, Language, LineBreak, WordBreak};
@@ -18,6 +19,8 @@ pub struct Analyzer {
     // Scratch resolver for `auto_per_paragraph`. It resolves
     // one paragraph at a time, and the result is spliced back into `bidi`.
     pub(crate) bidi_scratch: BidiResolver,
+    /// Line boundary positions, kept so each analysis reuses the buffer.
+    pub(crate) line_boundaries: Vec<usize>,
 }
 
 impl core::fmt::Debug for Analyzer {

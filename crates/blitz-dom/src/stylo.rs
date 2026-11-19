@@ -5,7 +5,7 @@ use blitz_traits::node_id::NodeId;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::StyleThreading;
 use crate::layout::damage::{CONSTRUCT_BOX, compute_layout_damage};
@@ -189,6 +189,7 @@ impl crate::document::BaseDocument {
             style::driver::traverse_dom(&traverser, token, rayon_pool);
             nodes_needing_style_image_flush =
                 std::mem::take(traverser.nodes_needing_style_image_flush.get_mut().unwrap());
+            self.size_container_seen |= *traverser.saw_size_container.get_mut();
         }
         self.pending_style_image_nodes
             .extend(nodes_needing_style_image_flush);
@@ -257,6 +258,9 @@ impl crate::document::BaseDocument {
             thread_local: &mut thread_local,
         };
         let styles = resolve_style(&mut context, node, RuleInclusion::All, None, None);
+        // Dropping the thread-local context runs its queued sequential tasks,
+        // which stylo requires to happen inside the layout thread state.
+        drop(thread_local);
 
         style::thread_state::exit(ThreadState::LAYOUT);
 
@@ -378,7 +382,7 @@ impl crate::document::BaseDocument {
     ///
     /// `iter_origins` only sees document-level origins, so any shadow root
     /// forces the slow path rather than risk missing a shadow `:has()`.
-    fn has_relative_selectors(&self) -> bool {
+    pub(crate) fn has_relative_selectors(&self) -> bool {
         !self.shadow_roots.is_empty()
             || self
                 .stylist
@@ -529,15 +533,15 @@ impl<'a> TNode for BlitzNode<'a> {
     type ConcreteShadowRoot = BlitzNode<'a>;
 
     fn parent_node(&self) -> Option<Self> {
-        self.parent.map(|id| self.with(id))
+        self.parent_id().map(|id| self.with(id))
     }
 
     fn first_child(&self) -> Option<Self> {
-        self.children.first().map(|id| self.with(*id))
+        self.children().first().map(|id| self.with(id))
     }
 
     fn last_child(&self) -> Option<Self> {
-        self.children.last().map(|id| self.with(*id))
+        self.children().last().map(|id| self.with(id))
     }
 
     fn prev_sibling(&self) -> Option<Self> {
@@ -551,7 +555,7 @@ impl<'a> TNode for BlitzNode<'a> {
     fn owner_doc(&self) -> Self::ConcreteDocument {
         // Walk up the (layout-)parent chain to the root Document node.
         let mut node = *self;
-        while let Some(parent_id) = node.parent {
+        while let Some(parent_id) = node.parent_id() {
             node = node.with(parent_id);
         }
         node
@@ -564,7 +568,7 @@ impl<'a> TNode for BlitzNode<'a> {
     // Flat-tree parent: assigned nodes hang off their slot, shadow
     // top-levels off the host (the shadow-root node is transparent).
     fn traversal_parent(&self) -> Option<Self::ConcreteElement> {
-        if let Some(slot_id) = self.assigned_slot {
+        if let Some(slot_id) = Node::assigned_slot(self) {
             return Some(self.with(slot_id));
         }
         let parent = self.parent_node()?;
@@ -575,11 +579,11 @@ impl<'a> TNode for BlitzNode<'a> {
     }
 
     fn opaque(&self) -> OpaqueNode {
-        OpaqueNode(self.id.as_u64() as usize)
+        OpaqueNode(Node::id(self).as_u64() as usize)
     }
 
     fn debug_id(self) -> usize {
-        self.id.as_u64() as usize
+        self.id().as_u64() as usize
     }
 
     fn as_element(&self) -> Option<Self::ConcreteElement> {
@@ -616,7 +620,7 @@ impl selectors::Element for BlitzNode<'_> {
         // find some other solution that will enable "rehydration". This is required to enable and use the
         // Shadow DOM functionality in Stylo.
         let non_null =
-            NonNull::new((self.id.as_u64() as usize).wrapping_add(1) as *mut ()).unwrap();
+            NonNull::new((Node::id(self).as_u64() as usize).wrapping_add(1) as *mut ()).unwrap();
         OpaqueElement::from_non_null_ptr(non_null)
     }
 
@@ -627,16 +631,14 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn parent_node_is_shadow_root(&self) -> bool {
-        self.parent
+        self.parent_id()
             .is_some_and(|id| self.with(id).is_shadow_root())
     }
 
     // ::slotted() matching walks this edge (selectors crate default
     // is None, which disables slotted rules entirely).
     fn assigned_slot(&self) -> Option<Self> {
-        // Field access (no parens) reads Node's stored assignment,
-        // dodging the method-name collision with this override.
-        self.assigned_slot.map(|id| self.with(id))
+        Node::assigned_slot(self).map(|id| self.with(id))
     }
 
     fn containing_shadow_host(&self) -> Option<Self> {
@@ -647,30 +649,30 @@ impl selectors::Element for BlitzNode<'_> {
         matches!(self.data, NodeData::AnonymousBlock(_))
     }
 
-    // These methods are implemented naively since we only threaded real nodes and not fake nodes
-    // we should try and use `find` instead of this foward/backward stuff since its ugly and slow
+    // Locate self in the parent's child list once, then scan from there: stepping with
+    // forward(n)/backward(n) repeated that lookup for every skipped text node.
     fn prev_sibling_element(&self) -> Option<Self> {
-        let mut n = 1;
-        while let Some(node) = self.backward(n) {
-            if node.is_element() {
-                return Some(node);
-            }
-            n += 1;
-        }
-
-        None
+        let parent = self.with(self.parent_id()?);
+        let index = self.child_index().unwrap_or(0);
+        let children = parent.children();
+        assert!(index <= children.len(), "child index past the end of the child list");
+        children
+            .iter()
+            .take(index)
+            .rev()
+            .map(|id| self.with(id))
+            .find(|node| node.is_element())
     }
 
     fn next_sibling_element(&self) -> Option<Self> {
-        let mut n = 1;
-        while let Some(node) = self.forward(n) {
-            if node.is_element() {
-                return Some(node);
-            }
-            n += 1;
-        }
-
-        None
+        let parent = self.with(self.parent_id()?);
+        let index = self.child_index().unwrap_or(0);
+        parent
+            .children()
+            .iter()
+            .skip(index + 1)
+            .map(|id| self.with(id))
+            .find(|node| node.is_element())
     }
 
     fn first_element_child(&self) -> Option<Self> {
@@ -687,7 +689,7 @@ impl selectors::Element for BlitzNode<'_> {
     }
 
     fn has_namespace(&self, ns: &Namespace) -> bool {
-        self.element_data().expect("Not an element").name.ns == *ns
+        self.element_data().expect("Not an element").namespace() == ns
     }
 
     fn is_same_type(&self, other: &Self) -> bool {
@@ -707,7 +709,7 @@ impl selectors::Element for BlitzNode<'_> {
             attr.name.local == local_name.0
                 && match ns {
                     NamespaceConstraint::Any => true,
-                    NamespaceConstraint::Specific(ns) => attr.name.ns == ns.0,
+                    NamespaceConstraint::Specific(ns) => *attr.namespace() == ns.0,
                 }
                 && operation.eval_str(&attr.value)
         })
@@ -1017,13 +1019,12 @@ impl<'a> TElement for BlitzNode<'a> {
     fn style_attribute(&self) -> Option<ArcBorrow<'_, Locked<PropertyDeclarationBlock>>> {
         self.element_data()
             .expect("Not an element")
-            .style_attribute
-            .as_ref()
+            .style_attribute()
             .map(|f| f.borrow_arc())
     }
 
     fn state(&self) -> ElementState {
-        *self.element_state()
+        self.element_state().get()
     }
 
     fn has_part_attr(&self) -> bool {
@@ -1071,11 +1072,11 @@ impl<'a> TElement for BlitzNode<'a> {
     }
 
     fn handled_snapshot(&self) -> bool {
-        self.snapshot_handled().load(Ordering::SeqCst)
+        self.snapshot_handled()
     }
 
     unsafe fn set_handled_snapshot(&self) {
-        self.snapshot_handled().store(true, Ordering::SeqCst);
+        self.set_snapshot_handled(true);
     }
 
     // Stylo calls this on elements it is already traversing (or has already
@@ -1197,8 +1198,8 @@ impl<'a> TElement for BlitzNode<'a> {
         // TODO: case-insensitive matching for HTML-ns attrs
         self.attrs()?
             .iter()
-            .find(|a| a.name.local == attr.0 && a.name.ns == ns.0)
-            .map(|a| a.value.clone())
+            .find(|a| a.name.local == attr.0 && *a.namespace() == ns.0)
+            .map(|a| a.value.to_string())
     }
 
     fn lang_attr(&self) -> Option<style::selector_parser::AttrValue> {
@@ -1227,7 +1228,7 @@ impl<'a> TElement for BlitzNode<'a> {
         let root_element = TDocument::as_node(&root_node)
             .first_element_child()
             .unwrap();
-        root_element.children.contains(&self.id)
+        root_element.children().contains(Node::id(self))
     }
 
     fn synthesize_presentational_hints_for_legacy_attributes<V>(
@@ -1372,7 +1373,7 @@ impl<'a> TElement for BlitzNode<'a> {
             });
 
         // https://html.spec.whatwg.org/multipage/#the-lang-and-xml:lang-attributes
-        let accepts_lang = elem.name.ns == ns!(html) || elem.name.ns == ns!(svg);
+        let accepts_lang = *elem.namespace() == ns!(html) || *elem.namespace() == ns!(svg);
         let mut lang = None;
 
         for attr in elem.attrs() {
@@ -1380,9 +1381,9 @@ impl<'a> TElement for BlitzNode<'a> {
             let value = attr.value.as_str();
 
             if *name == local_name!("lang") {
-                if attr.name.ns == ns!(xml) {
+                if *attr.namespace() == ns!(xml) {
                     lang = Some(value);
-                } else if attr.name.ns == ns!() && accepts_lang {
+                } else if *attr.namespace() == ns!() && accepts_lang {
                     lang = lang.or(Some(value));
                 }
             }
@@ -1568,7 +1569,8 @@ impl<'a> TElement for BlitzNode<'a> {
             // Keeps attr-styled svg text correct now that the serializer
             // stamps computed font-size onto text elements: the attr feeds
             // the cascade at pres-hint level, so the computed value has it.
-            if *name == local_name!("font-size") && *elem.name.ns == *"http://www.w3.org/2000/svg"
+            if *name == local_name!("font-size")
+                && **elem.namespace() == *"http://www.w3.org/2000/svg"
             {
                 if let Some(size) = parse_svg_size_attr(value) {
                     use style::values::specified::FontSize;
@@ -1601,7 +1603,7 @@ impl<'a> TElement for BlitzNode<'a> {
     }
 
     fn namespace(&self) -> &Namespace {
-        &self.element_data().expect("Not an element").name.ns
+        self.element_data().expect("Not an element").namespace()
     }
 
     fn query_container_size(
@@ -1685,7 +1687,7 @@ impl<'a> Iterator for Traverser<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let node_id = self.parent.flat_children().get(self.child_index)?;
-        let node = self.parent.with(*node_id);
+        let node = self.parent.with(node_id);
 
         self.child_index += 1;
 
@@ -1695,7 +1697,7 @@ impl<'a> Iterator for Traverser<'a> {
 
 impl std::hash::Hash for BlitzNode<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.id.as_u64())
+        state.write_u64(Node::id(self).as_u64())
     }
 }
 
@@ -1717,6 +1719,8 @@ pub struct RecalcStyle<'a> {
     /// dedicated storage on the node (see `flush_image_layers_from_style`)
     /// because their style changed during this traversal.
     nodes_needing_style_image_flush: Mutex<Vec<NodeId>>,
+    /// Whether this traversal styled any element or eager pseudo-element as a query container.
+    saw_size_container: AtomicBool,
 }
 
 impl<'a> RecalcStyle<'a> {
@@ -1724,8 +1728,20 @@ impl<'a> RecalcStyle<'a> {
         RecalcStyle {
             context,
             nodes_needing_style_image_flush: Mutex::new(Vec::new()),
+            saw_size_container: AtomicBool::new(false),
         }
     }
+}
+
+fn is_size_container_style(style: &ComputedValues) -> bool {
+    !style.get_box().clone_container_type().is_normal()
+}
+
+/// Whether this element or one of its eager pseudo-elements styles as a query container.
+fn styles_a_size_container(styles: &style::data::ElementStyles) -> bool {
+    let pseudos = styles.pseudos.as_optional_array();
+    styles.get_primary().is_some_and(|s| is_size_container_style(s))
+        || pseudos.is_some_and(|styles| styles.iter().flatten().any(|s| is_size_container_style(s)))
 }
 
 #[allow(unsafe_code)]
@@ -1764,6 +1780,12 @@ impl<'dom> DomTraversal<BlitzNode<'dom>> for RecalcStyle<'_> {
 
             sync_pseudo_element_styles(el, &data, &self.nodes_needing_style_image_flush);
 
+            if !self.saw_size_container.load(Ordering::Relaxed)
+                && styles_a_size_container(&data.styles)
+            {
+                self.saw_size_container.store(true, Ordering::Relaxed);
+            }
+
             if !data.damage.is_empty() {
                 // Mark the ancestor chain so that the damage propagation pass
                 // visits this element.
@@ -1777,7 +1799,7 @@ impl<'dom> DomTraversal<BlitzNode<'dom>> for RecalcStyle<'_> {
                     self.nodes_needing_style_image_flush
                         .lock()
                         .unwrap()
-                        .push(el.id);
+                        .push(Node::id(el));
                 }
             }
 
@@ -1938,8 +1960,8 @@ fn needs_style_image_flush(node: &Node, style: &ComputedValues) -> bool {
     node.data.downcast_element().is_some_and(|el| {
         out_of_sync(
             &style.get_background().background_image.0,
-            &el.background_images,
-        ) || out_of_sync(&style.get_svg().mask_image.0, &el.mask_images)
+            el.background_images(),
+        ) || out_of_sync(&style.get_svg().mask_image.0, el.mask_images())
     })
 }
 

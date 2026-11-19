@@ -581,7 +581,7 @@ pub(crate) fn inline_opacity(doc: &BaseDocument, node_id: NodeId, inline_root_id
         if let Some(styles) = node.primary_styles() {
             opacity *= styles.get_effects().opacity;
         }
-        walk_id = node.parent;
+        walk_id = node.parent_id();
     }
     opacity
 }
@@ -622,7 +622,7 @@ pub(crate) fn stroke_text<'a>(
                 break;
             }
         }
-        let Some(parent) = node.parent else { break };
+        let Some(parent) = node.parent_id() else { break };
         ancestors.push(parent);
         walk_id = parent;
     }
@@ -667,7 +667,7 @@ pub(crate) fn stroke_text<'a>(
                     if node_id == inline_root_id {
                         break;
                     }
-                    walk_id = doc.get_node(node_id).and_then(|node| node.parent);
+                    walk_id = doc.get_node(node_id).and_then(|node| node.parent_id());
                 }
                 path_scratch.extend(ancestors.iter().copied());
                 path_scratch.reverse();

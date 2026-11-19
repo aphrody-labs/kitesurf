@@ -15,6 +15,7 @@ use core::ops::Range;
 
 use alloc::vec::Vec;
 use parlance::BidiLevel;
+use thin_vec::ThinVec;
 use parley_engine::shape::Whitespace;
 use parley_engine::{Atom, ShapedRun, ShapedSlice, ShapedText};
 
@@ -284,7 +285,9 @@ pub(crate) struct LayoutData<B: Brush> {
     // Output of style resolution (input to line breaking)
     pub(crate) styles: Vec<Style<B>>,
     pub(crate) style_metrics: Vec<StyleMetrics>,
-    pub(crate) inline_boxes: Vec<LayoutInlineBox>,
+    // Thin vectors for the buffers most paragraphs leave empty: 4 bytes each instead of 12
+    // on wasm32, retained once per paragraph.
+    pub(crate) inline_boxes: ThinVec<LayoutInlineBox>,
 
     // Output of shaping (input to line breaking)
     pub(crate) shaped_text: ShapedText,
@@ -303,19 +306,19 @@ pub(crate) struct LayoutData<B: Brush> {
     /// (see `EffectiveSpacing::gaps`), so line breaking, content
     /// widths, glyph positions and hit-testing all include it
     /// without the shaped advances changing.
-    pub(crate) cluster_lead_advance: Vec<f32>,
+    pub(crate) cluster_lead_advance: ThinVec<f32>,
     /// Per-cluster *trailing* advance contributed by an inline-
     /// span box decoration that ends at this cluster: the
     /// `padding_inline_end + border_inline_end_width` of any
     /// span whose last cluster is this one. Charged as a gap
     /// visually after the cluster's atom. See
     /// `cluster_lead_advance`.
-    pub(crate) cluster_trail_advance: Vec<f32>,
+    pub(crate) cluster_trail_advance: ThinVec<f32>,
 
     /// Span boundaries for fragment generation, including boundaries whose
     /// corresponding inline advance is zero.
-    pub(crate) span_starts: Vec<SpanBoundary>,
-    pub(crate) span_ends: Vec<SpanBoundary>,
+    pub(crate) span_starts: ThinVec<SpanBoundary>,
+    pub(crate) span_ends: ThinVec<SpanBoundary>,
 
     /// Per-line inline-span fragment rectangles. Each entry
     /// describes one rectangle the painter should fill (with
@@ -339,7 +342,7 @@ pub(crate) struct LayoutData<B: Brush> {
     ///
     /// Sorted by `line_index` then `x_start` so the painter can
     /// iterate per-line in spatial order without an extra sort.
-    pub(crate) span_fragments: Vec<SpanFragment>,
+    pub(crate) span_fragments: ThinVec<SpanFragment>,
 
     // Output of line breaking
     /// The lines in the
@@ -350,7 +353,7 @@ pub(crate) struct LayoutData<B: Brush> {
     /// The root aligned subtree of each line doesn't have an entry as its offset is trivially zero.
     ///
     /// Each line owns a contiguous slice ([`LineData::aligned_subtree_offsets`]).
-    pub(crate) aligned_subtree_offsets: Vec<AlignedSubtreeOffset>,
+    pub(crate) aligned_subtree_offsets: ThinVec<AlignedSubtreeOffset>,
     /// The width constraint that was used to line break the layout
     pub(crate) layout_max_advance: f32,
     /// The computed width of the layout excluding hanging whitespace
@@ -382,18 +385,18 @@ impl<B: Brush> Default for LayoutData<B> {
             height: 0.,
             styles: Vec::new(),
             style_metrics: Vec::new(),
-            inline_boxes: Vec::new(),
+            inline_boxes: ThinVec::new(),
             shaped_text: ShapedText::new(),
             runs: Vec::new(),
             items: Vec::new(),
-            cluster_lead_advance: Vec::new(),
-            cluster_trail_advance: Vec::new(),
-            span_starts: Vec::new(),
-            span_ends: Vec::new(),
-            span_fragments: Vec::new(),
+            cluster_lead_advance: ThinVec::new(),
+            cluster_trail_advance: ThinVec::new(),
+            span_starts: ThinVec::new(),
+            span_ends: ThinVec::new(),
+            span_fragments: ThinVec::new(),
             lines: Vec::new(),
             line_items: Vec::new(),
-            aligned_subtree_offsets: Vec::new(),
+            aligned_subtree_offsets: ThinVec::new(),
             alignment: None,
             layout_max_advance: 0.0,
             indent_amount: 0.0,
@@ -590,7 +593,7 @@ impl<B: Brush> LayoutData<B> {
         if !self.has_tabs || cluster.whitespace() != Whitespace::Tab {
             return spacing.atom_advance(atom);
         }
-        let style = &self.styles[cluster.style_index as usize];
+        let style = &self.styles[atom.characters()[0].style_index as usize];
         style
             .tab_size
             .stop_advance(pen, self.runs[run_idx].space_advance)
@@ -659,6 +662,21 @@ struct ContentWidthsMeasurer {
     /// Indents for lines following a soft/hard wrap.
     soft_indent: f32,
     hard_indent: f32,
+}
+
+/// Whether every character of the cluster at `cluster_idx` hangs.
+///
+/// Its first character is checked separately, through the cluster's cached flags, so a
+/// single-character cluster needs no scan of `characters`.
+fn cluster_hangs<B: Brush>(slice: ShapedSlice<'_>, cluster_idx: u32, styles: &[Style<B>]) -> bool {
+    let char_range = slice.shaped_cluster_char_range(cluster_idx);
+    char_range.end - char_range.start == 1
+        || slice.characters_in(char_range).iter().all(|character| {
+            whitespace_hangs(
+                character.whitespace,
+                &styles[character.style_index as usize],
+            )
+        })
 }
 
 impl ContentWidthsMeasurer {
@@ -845,9 +863,12 @@ impl ContentWidthsMeasurer {
         // The spacing gap of the current atom.
         let mut gap = 0.;
         let mut skip_atom = false;
-        for (i, cluster) in clusters.iter().enumerate() {
+        for (cluster_idx, (i, cluster)) in slice
+            .shaped_clusters_range()
+            .zip(clusters.iter().enumerate())
+        {
             let whitespace = cluster.whitespace();
-            let style = &styles[cluster.style_index as usize];
+            let style = &styles[slice.cluster_style_index(cluster_idx) as usize];
             let is_atom_start = i == 0 || cluster.is_grapheme_start();
             if is_atom_start {
                 skip_atom = false;
@@ -910,16 +931,7 @@ impl ContentWidthsMeasurer {
             // cached flags so the common case never touches `characters`.
             let hangs = can_hang
                 && whitespace_hangs(whitespace, style)
-                && (cluster.char_len() == 1
-                    || slice
-                        .characters_in(cluster.chars_range())
-                        .iter()
-                        .all(|character| {
-                            whitespace_hangs(
-                                character.whitespace,
-                                &styles[character.style_index as usize],
-                            )
-                        }));
+                && cluster_hangs(slice, cluster_idx, styles);
             if hangs {
                 self.running_hanging_whitespace += min_advance;
                 self.running_hanging_whitespace_max += max_advance;

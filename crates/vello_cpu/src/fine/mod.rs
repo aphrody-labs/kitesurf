@@ -1180,6 +1180,8 @@ pub(crate) struct FineRenderParams {
     pub(crate) scene_size: (u16, u16),
     /// Destination offset in the target pixmap.
     pub(crate) target_offset: (u16, u16),
+    /// First scene row to rasterize.
+    pub(crate) source_y: u16,
 }
 
 /// A trait for objects that can render pixel data into buffers.

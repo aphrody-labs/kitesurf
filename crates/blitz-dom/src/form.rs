@@ -227,9 +227,9 @@ fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeI
         //   field is an input element whose type attribute is in the Checkbox state and whose checkedness is false; or
         //   field is an input element whose type attribute is in the Radio Button state and whose checkedness is false,
         //  then continue.
-        if datalist_ancestor(doc, node.id)
+        if datalist_ancestor(doc, node.id())
             || element.attr(local_name!("disabled")).is_some()
-            || (element.name.local == local_name!("button") && node.id != submitter_id)
+            || (element.name.local == local_name!("button") && node.id() != submitter_id)
             || element.name.local == local_name!("input")
                 && ((matches!(element_type, Some("checkbox" | "radio"))
                     && !element.checkbox_input_checked().unwrap_or(false))
@@ -241,7 +241,7 @@ fn construct_entry_list(doc: &BaseDocument, form_id: NodeId, submitter_id: NodeI
         // If the field element is an input element whose type attribute is in the Image Button state, then:
         if element_type == Some("image") {
             // If the field element is not submitter, then continue.
-            if node.id != submitter_id {
+            if node.id() != submitter_id {
                 continue;
             }
             // TODO: If the field element has a name attribute specified and its value is not the empty string, let name be that value followed by U+002E (.). Otherwise, let name be the empty string.

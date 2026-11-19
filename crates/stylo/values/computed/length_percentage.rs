@@ -571,7 +571,9 @@ pub type CalcNode = calc::GenericCalcNode<ComputedLeaf>;
     ToCss,
     ToTyped,
 )]
-#[repr(C)]
+// Taffy's CompactLength keeps a tag in the low three bits of a pointer to this, so it must be
+// 8-aligned on 32-bit targets too rather than relying on the allocator rounding up.
+#[repr(C, align(8))]
 pub struct CalcLengthPercentage {
     #[animation(constant)]
     #[css(skip)]

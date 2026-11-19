@@ -91,15 +91,16 @@ impl ElementCx<'_, '_> {
         let scale = (min_dimension - 4.0).max(0.0) / 16.0;
 
         let frame = self.frame.border_box.to_rounded_rect(scale * 2.0);
+        let part_id = self.node.id().as_u64();
 
         match type_attr {
             Some("checkbox") => {
-                scene.begin_part(self.node.id.as_u64(), ScenePart::Checkbox { checked });
+                scene.begin_part(part_id, ScenePart::Checkbox { checked });
                 draw_checkbox(scene, checked, frame, self.transform, accent_color, scale);
                 scene.end_part();
             }
             Some("radio") => {
-                scene.begin_part(self.node.id.as_u64(), ScenePart::Radio { checked });
+                scene.begin_part(part_id, ScenePart::Radio { checked });
                 let center = frame.center();
                 draw_radio_button(scene, checked, center, self.transform, accent_color, scale);
                 scene.end_part();

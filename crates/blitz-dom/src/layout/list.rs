@@ -7,9 +7,9 @@ use style::{
 };
 
 use crate::{
-    BaseDocument,
+    BaseDocument, NodeTree,
     layout::counters::format_counter,
-    node::{ListItemLayout, ListItemLayoutPosition, Marker},
+    node::{ListItemLayout, ListItemLayoutPosition, Marker, TextBrush, with_rebuild_contexts},
     stylo_to_parley,
 };
 
@@ -21,7 +21,7 @@ pub(super) fn collect_list_item_children(
     reversed: bool,
     node_id: NodeId,
 ) {
-    let mut children = doc.nodes[node_id].children.clone();
+    let mut children = doc.nodes[node_id].children().to_vec();
     if reversed {
         children.reverse();
     }
@@ -36,14 +36,14 @@ pub(super) fn collect_list_item_children(
             .unwrap_or((*index + 1) as i32);
         if let Some(layout) = node_list_item_child(doc, child, value) {
             let node = &mut doc.nodes[child];
-            node.element_data_mut().unwrap().list_item_data = Some(Box::new(layout));
+            node.element_data_mut().unwrap().set_list_item_data(Some(Box::new(layout)));
             *index += 1;
             collect_list_item_children(doc, index, reversed, child);
         } else {
             // Unset marker in case it was previously set
             let node = &mut doc.nodes[child];
             if let Some(element_data) = node.element_data_mut() {
-                element_data.list_item_data = None;
+                element_data.set_list_item_data(None);
             }
         }
     }
@@ -80,45 +80,47 @@ fn node_list_item_child(
     };
 
     let styles = node.primary_styles().unwrap();
-    let list_style_type = styles.clone_list_style_type();
-    let list_style_position = styles.clone_list_style_position();
-    let marker = marker_for_style(list_style_type.clone(), value)?;
-
-    let position = match list_style_position {
+    let marker = marker_for_style(styles.clone_list_style_type(), value)?;
+    let position = match styles.clone_list_style_position() {
         ListStylePosition::Inside => ListItemLayoutPosition::Inside,
-        ListStylePosition::Outside => {
-            let mut parley_style = stylo_to_parley::style(child_id, &styles);
+        ListStylePosition::Outside => ListItemLayoutPosition::Outside {
+            scale: doc.viewport.scale(),
+        },
+    };
 
-            if let Some(font_family) = font_for_bullet_style(list_style_type) {
-                parley_style.font_family = font_family;
-            }
+    Some(ListItemLayout { marker, position })
+}
 
-            // Create a parley tree builder
-            let mut font_ctx = doc.font_ctx.lock().unwrap();
-            let mut builder = doc.layout_ctx.tree_builder(
-                &mut font_ctx,
-                doc.viewport.scale(),
-                true,
-                &parley_style,
-            );
-
-            match &marker {
+impl ListItemLayout {
+    /// The marker of the outside list item `node_id`, shaped and broken from its style.
+    pub fn outside_marker_layout(
+        &self,
+        nodes: &NodeTree,
+        node_id: NodeId,
+    ) -> Option<parley::Layout<TextBrush>> {
+        let ListItemLayoutPosition::Outside { scale } = self.position else {
+            return None;
+        };
+        let styles = nodes[node_id].primary_styles()?;
+        let mut parley_style = stylo_to_parley::style(node_id, &styles);
+        if let Some(font_family) = font_for_bullet_style(styles.clone_list_style_type()) {
+            parley_style.font_family = font_family;
+        }
+        Some(with_rebuild_contexts(nodes, |layout_ctx, font_ctx| {
+            let mut builder = layout_ctx.tree_builder(font_ctx, scale, true, &parley_style);
+            match &self.marker {
                 Marker::Char(char) => {
                     let mut buf = [0u8; 4];
                     builder.push_text(char.encode_utf8(&mut buf));
                 }
                 Marker::String(str) => builder.push_text(str),
             };
-
             let mut layout = builder.build().0;
             let width = layout.calculate_content_widths().max;
             layout.break_all_lines(Some(width));
-
-            ListItemLayoutPosition::Outside(Box::new(layout))
-        }
-    };
-
-    Some(ListItemLayout { marker, position })
+            layout
+        }))
+    }
 }
 
 // Determine the marker to render for a given list style type and the

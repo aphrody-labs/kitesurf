@@ -1,5 +1,7 @@
 use blitz_traits::node_id::NodeId;
 use selectors::SelectorList;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use smallvec::SmallVec;
 use style::dom::{TDocument, TNode};
 use style::dom_apis::{
@@ -8,17 +10,64 @@ use style::dom_apis::{
 use style::selector_parser::{SelectorImpl, SelectorParser};
 use style_traits::ParseError;
 
-use crate::{BaseDocument, Node};
+use crate::url::DocumentUrl;
+use crate::{Atom, BaseDocument, Node};
+
+/// Distinct selectors kept per document; a full cache starts over, so a page generating
+/// endless unique selectors costs one reparse each and stays bounded.
+const SELECTOR_CACHE_ENTRIES: usize = 128;
+/// Longer selectors are rare and not worth retaining.
+const SELECTOR_CACHE_MAX_LEN: usize = 256;
+
+/// Parsed querySelector selectors by source text. Scripts query the same few selectors in
+/// loops, and parsing dominated short queries. Errors are not cached, so they reparse.
+#[derive(Default)]
+pub(crate) struct SelectorCache {
+    entries: std::cell::RefCell<Option<(DocumentUrl, ParsedSelectors)>>,
+}
+
+type ParsedSelectors = HashMap<Box<str>, SelectorList<SelectorImpl>>;
+
+impl SelectorCache {
+    fn get(&self, url: &DocumentUrl, input: &str) -> Option<SelectorList<SelectorImpl>> {
+        let entries = self.entries.borrow();
+        let (cached_url, lists) = entries.as_ref()?;
+        if !cached_url.same_url(url) {
+            return None;
+        }
+        lists.get(input).cloned()
+    }
+
+    fn insert(&self, url: &DocumentUrl, input: &str, list: &SelectorList<SelectorImpl>) {
+        if input.len() > SELECTOR_CACHE_MAX_LEN {
+            return;
+        }
+        let mut entries = self.entries.borrow_mut();
+        let stale = entries.as_ref().is_none_or(|(cached_url, lists)| {
+            !cached_url.same_url(url) || lists.len() >= SELECTOR_CACHE_ENTRIES
+        });
+        if stale {
+            *entries = Some((url.clone(), HashMap::new()));
+        }
+        if let Some((_, lists)) = entries.as_mut() {
+            lists.insert(input.into(), list.clone());
+        }
+    }
+}
 
 impl BaseDocument {
     /// Find the node with the specified id attribute (if one exists).
     /// If multiple nodes have the same id, the first in tree order is returned.
     pub fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
-        match self.nodes_to_id.get(id)?.as_slice() {
-            [] => None,
-            [node_id] => Some(*node_id),
-            candidates => self.first_in_tree_order(candidates),
-        }
+        let id = Atom::from(id);
+        let first = *self.nodes_to_id.get(&id)?;
+        let Some(later) = self.id_duplicates.get(&id) else {
+            return Some(first);
+        };
+        let candidates: Vec<NodeId> = std::iter::once(first)
+            .chain(later.iter().copied())
+            .collect();
+        self.first_in_tree_order(&candidates)
     }
 
     /// Find the first of `candidates` in tree order
@@ -28,7 +77,7 @@ impl BaseDocument {
             if candidates.contains(&node_id) {
                 return Some(node_id);
             }
-            stack.extend(self.nodes[node_id].children.iter().rev().copied());
+            stack.extend(self.nodes[node_id].children().iter().rev());
         }
         None
     }
@@ -38,18 +87,56 @@ impl BaseDocument {
         if id.is_empty() {
             return;
         }
-        let node_ids = self.nodes_to_id.entry(id.to_string()).or_default();
-        if !node_ids.contains(&node_id) {
-            node_ids.push(node_id);
+        self.add_atom_to_id_map(Atom::from(id), node_id);
+    }
+
+    /// [`Self::add_to_id_map`] for an id already interned.
+    pub(crate) fn add_atom_to_id_map(&mut self, id: Atom, node_id: NodeId) {
+        if id.is_empty() {
+            return;
+        }
+        match self.nodes_to_id.entry(id) {
+            Entry::Vacant(entry) => {
+                entry.insert(node_id);
+            }
+            Entry::Occupied(entry) => {
+                if *entry.get() != node_id {
+                    let later = self.id_duplicates.entry(entry.key().clone()).or_default();
+                    if !later.contains(&node_id) {
+                        later.push(node_id);
+                    }
+                }
+            }
         }
     }
 
     /// Remove a node from the id-to-node map
     pub(crate) fn remove_from_id_map(&mut self, id: &str, node_id: NodeId) {
-        if let Some(node_ids) = self.nodes_to_id.get_mut(id) {
-            node_ids.retain(|nid| *nid != node_id);
-            if node_ids.is_empty() {
-                self.nodes_to_id.remove(id);
+        let id = Atom::from(id);
+        let Some(&first) = self.nodes_to_id.get(&id) else {
+            return;
+        };
+        let later = self.id_duplicates.get_mut(&id);
+        if first != node_id {
+            if let Some(later) = later {
+                later.retain(|nid| *nid != node_id);
+                if later.is_empty() {
+                    self.id_duplicates.remove(&id);
+                }
+            }
+            return;
+        }
+        // The earliest remaining duplicate takes the main entry, keeping insertion order.
+        match later {
+            Some(later) => {
+                let next = later.remove(0);
+                if later.is_empty() {
+                    self.id_duplicates.remove(&id);
+                }
+                self.nodes_to_id.insert(id, next);
+            }
+            None => {
+                self.nodes_to_id.remove(&id);
             }
         }
     }
@@ -111,7 +198,7 @@ impl BaseDocument {
             self.may_use_invalidation_for(scope),
         );
 
-        result.map(|node| node.id)
+        result.map(|node| node.id())
     }
 
     /// Find all nodes that match the selector specified as a string
@@ -172,7 +259,7 @@ impl BaseDocument {
             self.may_use_invalidation_for(scope),
         );
 
-        results.iter().map(|node| node.id).collect()
+        results.iter().map(|node| node.id()).collect()
     }
 
     fn may_use_invalidation_for(&self, scope: NodeId) -> MayUseInvalidation {
@@ -205,8 +292,13 @@ impl BaseDocument {
         &self,
         input: &str,
     ) -> Result<SelectorList<SelectorImpl>, ParseError> {
+        if let Some(list) = self.selector_cache.get(&self.url, input) {
+            return Ok(list);
+        }
         let url_extra_data = self.url.url_extra_data();
-        SelectorParser::parse_author_origin_no_namespace(input, &url_extra_data)
+        let list = SelectorParser::parse_author_origin_no_namespace(input, &url_extra_data)?;
+        self.selector_cache.insert(&self.url, input, &list);
+        Ok(list)
     }
 
     // Namespace-aware variant for CSSOM selectorText writes: a rule in a
@@ -259,7 +351,7 @@ impl Node {
             &mut result,
             MayUseInvalidation::No,
         );
-        result.map(|node| node.id)
+        result.map(|node| node.id())
     }
 
     /// Find all descendants of this node that match the selector(s) specified
@@ -280,7 +372,7 @@ impl Node {
             &mut results,
             MayUseInvalidation::No,
         );
-        results.iter().map(|node| node.id).collect()
+        results.iter().map(|node| node.id()).collect()
     }
 
     /// Test whether this element matches the selector(s) specified in
@@ -303,6 +395,6 @@ impl Node {
             return None;
         }
 
-        element_closest(self, selector_list, self.owner_doc().quirks_mode()).map(|node| node.id)
+        element_closest(self, selector_list, self.owner_doc().quirks_mode()).map(|node| node.id())
     }
 }

@@ -4,7 +4,11 @@ use blitz_traits::{
     shell::ShellProvider,
 };
 use keyboard_types::{Key, Modifiers, NamedKey};
-use parley::{ContentWidths, FontContext, LayoutContext};
+use parley::{Alignment, AlignmentOptions, ContentWidths, FontContext, IndentOptions, LayoutContext};
+use std::cell::{Cell, RefCell};
+use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::util::ACTION_MOD;
 
@@ -23,9 +27,28 @@ impl TextBrush {
 
 #[derive(Clone)]
 pub struct TextLayout {
-    pub text: String,
-    pub content_widths: Option<ContentWidths>,
-    pub layout: parley::layout::Layout<TextBrush>,
+    /// Shaped text and lines, with the text and source ranges they were
+    /// built from. Empty while evicted or not yet shaped, and then `evicted`
+    /// holds what rebuilds it: read it through [`Self::layout`] or
+    /// [`Self::layout_mut`], which rebuild first.
+    built: OnceLock<Box<Built>>,
+    text_kind: TextKindCell,
+    /// The content widths inline layout last measured, and the indent it
+    /// measured them with (the fixed part of `text-indent`). Kept only for a
+    /// layout without inline boxes, whose widths depend on nothing else, so
+    /// that an evicted root is measured without rebuilding it.
+    pub content_widths: Option<(f32, ContentWidths)>,
+    evicted: Option<Box<EvictedLayout>>,
+    /// Whether the last line break can be replayed from the layout alone:
+    /// false when floats shaped the lines, which needs the gone block context.
+    pub replayable_break: bool,
+    /// Set by every read; the eviction scan spares a far layout that was read
+    /// since its last visit once, so a layout queried every frame stays live.
+    recently_read: ReadFlag,
+    /// The low 31 bits: sequence number of this root's latest entry in the layout pass's
+    /// eviction window, so older entries for it are skipped. The top bit: the document's
+    /// `inline_roots` index holds this root, which it does while the node holds this layout.
+    seq_and_indexed: u32,
     /// Block-axis offset (in CSS px) of the line boxes from the top of the container's content
     /// box, as applied by `align-content`.
     pub block_offset: f32,
@@ -33,11 +56,6 @@ pub struct TextLayout {
     /// containing block (as `SPAN_*_CB` flags). The inline root claims those boxes in its place.
     /// Set by each `RunMode::PerformLayout` run of inline layout.
     pub span_cb_flags: stylo_taffy::StyleFlags,
-    // (text node id, byte range in the layout text) per
-    // pushed text node: approximate under whitespace collapse
-    // (measured committed+pending around each push), consumed by
-    // the DOM-selection paint bridge with clamping.
-    pub node_ranges: Vec<(NodeId, core::ops::Range<usize>)>,
     /// Content width `layout` currently holds lines for, or
     /// NaN when it holds none: a rebuilt tree has no lines until
     /// something breaks it. resolve compares this against the committed
@@ -45,15 +63,119 @@ pub struct TextLayout {
     pub last_break_width: f32,
 }
 
+// Every inline root keeps one, evicted or not: 44 bytes fill a 48-byte
+// wasm32 allocator chunk.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(size_of::<TextLayout>() <= 44);
+
+/// A shaped layout and the text it was built from, which are always built
+/// and evicted together.
+#[derive(Clone, Default)]
+struct Built {
+    layout: parley::layout::Layout<TextBrush>,
+    content: TextContent,
+}
+
+#[derive(Clone, Default)]
+struct TextContent {
+    text: String,
+    // (text node id, byte range in the layout text) per
+    // pushed text node: approximate under whitespace collapse
+    // (measured committed+pending around each push), consumed by
+    // the DOM-selection paint bridge with clamping.
+    node_ranges: Vec<(NodeId, core::ops::Range<usize>)>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TextKind {
+    pub(crate) empty: bool,
+    pub(crate) only_bidi_controls: bool,
+}
+
+impl TextKind {
+    fn of(text: &str) -> Self {
+        Self {
+            empty: text.is_empty(),
+            only_bidi_controls: text
+                .chars()
+                .all(|c| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+        }
+    }
+}
+
+/// A [`TextKind`] once known, packed into one byte.
+#[derive(Default)]
+struct TextKindCell(AtomicU8);
+
+impl TextKindCell {
+    const KNOWN: u8 = 1;
+    const EMPTY: u8 = 2;
+    const ONLY_BIDI_CONTROLS: u8 = 4;
+
+    fn get_or_init(&self, init: impl FnOnce() -> TextKind) -> TextKind {
+        let bits = self.0.load(Ordering::Relaxed);
+        if bits & Self::KNOWN != 0 {
+            return TextKind {
+                empty: bits & Self::EMPTY != 0,
+                only_bidi_controls: bits & Self::ONLY_BIDI_CONTROLS != 0,
+            };
+        }
+        let kind = init();
+        let bits = Self::KNOWN
+            | if kind.empty { Self::EMPTY } else { 0 }
+            | if kind.only_bidi_controls { Self::ONLY_BIDI_CONTROLS } else { 0 };
+        self.0.store(bits, Ordering::Relaxed);
+        kind
+    }
+}
+
+impl Clone for TextKindCell {
+    fn clone(&self) -> Self {
+        Self(AtomicU8::new(self.0.load(Ordering::Relaxed)))
+    }
+}
+
 impl Default for TextLayout {
     fn default() -> Self {
+        let mut layout = Self::unfilled();
+        layout.built = OnceLock::from(Box::default());
+        layout
+    }
+}
+
+impl TextLayout {
+    /// The top bit of `seq_and_indexed`; pass sequence numbers stay below it.
+    pub(crate) const ROOT_INDEXED: u32 = 1 << 31;
+
+    pub(crate) fn in_pass_seq(&self) -> u32 {
+        self.seq_and_indexed & !Self::ROOT_INDEXED
+    }
+
+    pub(crate) fn set_in_pass_seq(&mut self, seq: u32) {
+        debug_assert_eq!(seq & Self::ROOT_INDEXED, 0);
+        self.seq_and_indexed = (self.seq_and_indexed & Self::ROOT_INDEXED) | seq;
+    }
+
+    /// Marks the root as held by the `inline_roots` index; true if it already was.
+    pub(crate) fn mark_root_indexed(&mut self) -> bool {
+        let was = self.seq_and_indexed & Self::ROOT_INDEXED != 0;
+        self.seq_and_indexed |= Self::ROOT_INDEXED;
+        was
+    }
+
+    /// A layout holding neither text nor lines, for box construction to
+    /// build or leave unbuilt next: an empty box would be freed unread.
+    pub(crate) fn unfilled() -> Self {
         Self {
-            text: String::new(),
+            built: OnceLock::new(),
+            text_kind: TextKindCell::default(),
             content_widths: None,
-            layout: parley::layout::Layout::default(),
+            evicted: None,
+            replayable_break: false,
+            recently_read: ReadFlag::default(),
+            seq_and_indexed: 0,
             block_offset: 0.0,
             span_cb_flags: stylo_taffy::StyleFlags::empty(),
-            node_ranges: Vec::new(),
             // NaN = no lines yet; the repair scan gives it some once
             // the node has a committed box.
             last_break_width: f32::NAN,
@@ -61,16 +183,462 @@ impl Default for TextLayout {
     }
 }
 
+// Every evicted root keeps one: 20 bytes fill a 24-byte wasm32 chunk.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(size_of::<EvictedLayout>() <= 20);
+
+/// What every evicted root of a document rebuilds with.
+pub(crate) struct InlineRebuild {
+    pub(crate) font_ctx: Arc<Mutex<FontContext>>,
+    /// The document's queue of rebuilt roots, which become resident again.
+    pub(crate) rebuilt: Arc<Mutex<Vec<NodeId>>>,
+}
+
+/// Everything needed to rebuild an evicted layout with the lines it had:
+/// the shaping inputs are re-read from the DOM, the line-breaking inputs are
+/// the ones the dropped layout was last broken with.
+#[derive(Clone)]
+pub(crate) struct EvictedLayout {
+    pub(crate) node_id: NodeId,
+    pub(crate) scale: f32,
+    /// `None` for a layout never broken (only its text was collected), which
+    /// rebuilds shaped but without lines, as box construction left it.
+    pub(crate) breaking: Option<Box<EvictedBreak>>,
+}
+
+/// The line-breaking inputs an evicted layout was last broken with.
+#[derive(Clone)]
+pub(crate) struct EvictedBreak {
+    pub(crate) max_advance: f32,
+    // The indent and clamp are stored apart and narrowed so that every
+    // evicted root's state fits a smaller wasm32 chunk.
+    indent: f32,
+    indent_options: IndentOptions,
+    pub(crate) alignment: Option<Alignment>,
+    pub(crate) last_line_alignment: Option<Alignment>,
+    clamp_lines: Option<NonZeroU32>,
+    /// (width, height, baseline) per inline box, in text order.
+    pub(crate) boxes: Box<[(f32, f32, Option<f32>)]>,
+    /// Sizes the root at another width without rebuilding, when parley can
+    /// summarize this paragraph. The rebuild drops it.
+    pub(crate) summary: SummaryCell,
+}
+
+// 44 bytes fill a 48-byte wasm32 chunk.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(size_of::<EvictedBreak>() <= 44);
+
+impl EvictedBreak {
+    pub(crate) fn new(
+        max_advance: f32,
+        indent: (f32, IndentOptions),
+        alignment: Option<Alignment>,
+        last_line_alignment: Option<Alignment>,
+        clamp_lines: Option<usize>,
+        boxes: Box<[(f32, f32, Option<f32>)]>,
+        summary: SummaryCell,
+    ) -> Self {
+        let mut breaking = Self {
+            max_advance,
+            indent: indent.0,
+            indent_options: indent.1,
+            alignment,
+            last_line_alignment,
+            clamp_lines: None,
+            boxes,
+            summary,
+        };
+        breaking.set_clamp_lines(clamp_lines);
+        breaking
+    }
+
+    pub(crate) fn set_indent(&mut self, (indent, options): (f32, IndentOptions)) {
+        self.indent = indent;
+        self.indent_options = options;
+    }
+
+    pub(crate) fn clamp_lines(&self) -> Option<usize> {
+        self.clamp_lines.map(|lines| lines.get() as usize)
+    }
+
+    /// Line clamps are at least one line and come from a CSS integer.
+    pub(crate) fn set_clamp_lines(&mut self, lines: Option<usize>) {
+        self.clamp_lines = lines.map(|lines| {
+            u32::try_from(lines)
+                .ok()
+                .and_then(NonZeroU32::new)
+                .expect("a line clamp is a positive 32-bit count")
+        });
+    }
+}
+
+/// What lays out an evicted root without rebuilding it.
+pub(crate) struct EvictedSummary {
+    /// Breaks the lines at another width.
+    pub(crate) lines: parley::BreakSummary,
+    /// `None` when the root has no inline boxes. A thin box keeps every
+    /// evicted root's state within its wasm32 chunk.
+    pub(crate) out_of_flow: Option<Box<OutOfFlow>>,
+}
+
+impl EvictedSummary {
+    /// The root's inline boxes, all absolutely positioned, in layout order.
+    pub(crate) fn out_of_flow_ids(&self) -> &[NodeId] {
+        self.out_of_flow.as_deref().map_or(&[], |oof| &oof.ids)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct OutOfFlow {
+    pub(crate) ids: Box<[NodeId]>,
+    /// Kept when a box's static position depends on where along its line it
+    /// sits, which only the shaped line knows.
+    pub(crate) static_x: Option<StaticX>,
+}
+
+/// The inline offset of each out-of-flow box in its line, in layout units, as
+/// the live layout placed it when broken and aligned with `aligned`. A pass
+/// with other inputs rebuilds the root instead.
+#[derive(Clone)]
+pub(crate) struct StaticX {
+    pub(crate) aligned: AlignInputs,
+    /// Per box in [`EvictedSummary::out_of_flow_ids`] order.
+    pub(crate) x: Box<[f32]>,
+}
+
+/// The inputs that place items along a broken line. Floats compare by bits,
+/// so the recorded offsets are only reused for identical inputs.
+#[derive(Clone, Copy)]
+pub(crate) struct AlignInputs {
+    pub(crate) max_advance: f32,
+    pub(crate) indent: (f32, IndentOptions),
+    pub(crate) alignment: Option<Alignment>,
+    pub(crate) last_line_alignment: Option<Alignment>,
+    pub(crate) clamp_lines: Option<usize>,
+}
+
+impl PartialEq for AlignInputs {
+    fn eq(&self, other: &Self) -> bool {
+        self.max_advance.to_bits() == other.max_advance.to_bits()
+            && self.indent.0.to_bits() == other.indent.0.to_bits()
+            && self.indent.1 == other.indent.1
+            && self.alignment == other.alignment
+            && self.last_line_alignment == other.last_line_alignment
+            && self.clamp_lines == other.clamp_lines
+    }
+}
+
+/// An [`EvictedSummary`] that a rebuild, which only borrows the layout, can
+/// still drop: the live layout makes it redundant.
+#[derive(Default)]
+pub(crate) struct SummaryCell(Mutex<Option<EvictedSummary>>);
+
+impl SummaryCell {
+    pub(crate) fn new(summary: Option<EvictedSummary>) -> Self {
+        Self(Mutex::new(summary))
+    }
+
+    pub(crate) fn get_mut(&mut self) -> Option<&EvictedSummary> {
+        self.0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+    }
+
+    fn take(&self) -> Option<EvictedSummary> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    fn heap_size(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, |summary| {
+                let oof = summary.out_of_flow.as_deref().map_or(0, |oof| {
+                    size_of::<OutOfFlow>()
+                        + size_of_val(&*oof.ids)
+                        + oof.static_x.as_ref().map_or(0, |s| size_of_val(&*s.x))
+                });
+                summary.lines.heap_size() + oof
+            })
+    }
+}
+
+impl Clone for SummaryCell {
+    fn clone(&self) -> Self {
+        let summary = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::new(summary.as_ref().map(|summary| EvictedSummary {
+            lines: summary.lines.clone(),
+            out_of_flow: summary.out_of_flow.clone(),
+        }))
+    }
+}
+
+#[derive(Default)]
+struct ReadFlag(AtomicBool);
+
+impl Clone for ReadFlag {
+    fn clone(&self) -> Self {
+        Self(AtomicBool::new(self.0.load(Ordering::Relaxed)))
+    }
+}
+
+std::thread_local! {
+    static REBUILD_LAYOUT_CTX: RefCell<LayoutContext<TextBrush>> =
+        RefCell::new(LayoutContext::new());
+    static REBUILD_COUNT: Cell<u64> = const { Cell::new(0) };
+    static SUMMARY_STATS: Cell<InlineSummaryStats> = const {
+        Cell::new(InlineSummaryStats { summarized: 0, ambiguous: 0, unsummarized: 0 })
+    };
+}
+
+/// Number of evicted layouts rebuilt on this thread so far.
+pub fn inline_layout_rebuild_count() -> u64 {
+    REBUILD_COUNT.with(Cell::get)
+}
+
+/// How inline layout broke evicted roots' lines on this thread so far.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InlineSummaryStats {
+    /// Broken from the root's break summary, without rebuilding it.
+    pub summarized: u64,
+    /// Rebuilt because the summary could not decide a break exactly.
+    pub ambiguous: u64,
+    /// Rebuilt because the root has no summary, or floats were in the way.
+    pub unsummarized: u64,
+}
+
+pub fn inline_summary_stats() -> InlineSummaryStats {
+    SUMMARY_STATS.with(Cell::get)
+}
+
+pub(crate) fn count_inline_summary(update: impl FnOnce(&mut InlineSummaryStats)) {
+    SUMMARY_STATS.with(|stats| {
+        let mut value = stats.get();
+        update(&mut value);
+        stats.set(value);
+    });
+}
+
 impl TextLayout {
     pub fn new() -> Self {
         Default::default()
     }
 
-    pub fn content_widths(&mut self) -> ContentWidths {
-        *self
-            .content_widths
-            .get_or_insert_with(|| self.layout.calculate_content_widths())
+    /// The shaped, line-broken layout. Rebuilds it first if it was evicted,
+    /// so callers never see the evicted state.
+    pub fn layout(&self, nodes: &crate::NodeTree) -> &parley::layout::Layout<TextBrush> {
+        self.recently_read.0.store(true, Ordering::Relaxed);
+        &self.built(nodes).layout
     }
+
+    fn built(&self, nodes: &crate::NodeTree) -> &Built {
+        self.built.get_or_init(|| {
+            let evicted = self
+                .evicted
+                .as_deref()
+                .expect("an empty text layout always has its rebuild inputs");
+            rebuild_evicted_layout(nodes, evicted)
+        })
+    }
+
+    fn content(&self, nodes: &crate::NodeTree) -> &TextContent {
+        &self.built(nodes).content
+    }
+
+    /// The text the layout was built from, building it first if construction
+    /// left it unshaped.
+    pub fn text(&self, nodes: &crate::NodeTree) -> &str {
+        &self.content(nodes).text
+    }
+
+    /// (text node id, byte range in [`Self::text`]) per text node.
+    pub fn node_ranges(&self, nodes: &crate::NodeTree) -> &[(NodeId, core::ops::Range<usize>)] {
+        &self.content(nodes).node_ranges
+    }
+
+    /// Empty-line sizing needs only this classification, not rebuilt text.
+    pub(crate) fn text_kind(&self, nodes: &crate::NodeTree) -> TextKind {
+        self.text_kind
+            .get_or_init(|| TextKind::of(&self.content(nodes).text))
+    }
+
+    pub(crate) fn set_content(
+        &mut self,
+        mut text: String,
+        mut node_ranges: Vec<(NodeId, core::ops::Range<usize>)>,
+    ) {
+        // Both live as long as the paragraph; drop their push-growth slack.
+        text.shrink_to_fit();
+        node_ranges.shrink_to_fit();
+        self.text_kind = TextKindCell::default();
+        self.built.get_or_init(Box::default);
+        let built = self.built.get_mut().expect("initialised just above");
+        built.content = TextContent { text, node_ranges };
+    }
+
+    /// Leave the layout unshaped and its text unknown: the first build,
+    /// normally its own layout call, fills both. Box construction uses this
+    /// so it does not walk the subtree once more than shaping does.
+    pub(crate) fn set_unbuilt(&mut self, inputs: EvictedLayout) {
+        debug_assert!(inputs.breaking.is_none(), "an unbuilt layout has no lines");
+        self.built = OnceLock::new();
+        self.text_kind = TextKindCell::default();
+        self.evict(inputs);
+    }
+
+    /// Mutable [`Self::layout`] for layout itself, so not a read that keeps it
+    /// live. The text layout must not be inside `nodes` (take it out of its
+    /// element first), since the rebuild reads the tree.
+    pub fn layout_mut(
+        &mut self,
+        nodes: &crate::NodeTree,
+    ) -> &mut parley::layout::Layout<TextBrush> {
+        self.built(nodes);
+        &mut self.built.get_mut().expect("initialised just above").layout
+    }
+
+    /// The layout, which the caller has already rebuilt with [`Self::layout_mut`].
+    pub(crate) fn live(&self) -> &parley::layout::Layout<TextBrush> {
+        &self.built.get().expect("text layout used while evicted").layout
+    }
+
+    /// Mutable [`Self::live`].
+    pub(crate) fn live_mut(&mut self) -> &mut parley::layout::Layout<TextBrush> {
+        &mut self
+            .built
+            .get_mut()
+            .expect("text layout used while evicted")
+            .layout
+    }
+
+    /// The layout for box construction to build into from scratch. Drops any
+    /// eviction state, since the built layout replaces whatever it described.
+    pub(crate) fn layout_for_build(&mut self) -> &mut parley::layout::Layout<TextBrush> {
+        self.evicted = None;
+        self.built.get_or_init(Box::default);
+        &mut self.built.get_mut().expect("initialised just above").layout
+    }
+
+    /// Whether the shaped layout is currently dropped.
+    pub fn is_evicted(&self) -> bool {
+        self.built.get().is_none()
+    }
+
+    /// The line-breaking inputs a rebuild replays, while evicted with lines.
+    pub(crate) fn evicted_break(&self) -> Option<&EvictedBreak> {
+        if self.built.get().is_some() {
+            return None;
+        }
+        self.evicted.as_deref()?.breaking.as_deref()
+    }
+
+    /// Mutable [`Self::evicted_break`], so laying out an evicted root at a
+    /// new width changes the lines its rebuild will have.
+    pub(crate) fn evicted_break_mut(&mut self) -> Option<&mut EvictedBreak> {
+        if self.built.get().is_some() {
+            return None;
+        }
+        self.evicted.as_deref_mut()?.breaking.as_deref_mut()
+    }
+
+    /// What lays out this root without rebuilding it, while evicted with one.
+    pub(crate) fn evicted_summary(&mut self) -> Option<&EvictedSummary> {
+        self.evicted_break_mut()?.summary.get_mut()
+    }
+
+    /// Heap bytes held by the break summaries of this root's eviction state,
+    /// which a rebuild drops.
+    pub fn break_summary_heap_size(&self) -> usize {
+        self.evicted
+            .as_deref()
+            .and_then(|evicted| evicted.breaking.as_deref())
+            .map_or(0, |breaking| breaking.summary.heap_size())
+    }
+
+    /// The live layout, or `None` while evicted. For the eviction pass only.
+    pub(crate) fn live_layout(&self) -> Option<&parley::layout::Layout<TextBrush>> {
+        self.built.get().map(|built| &built.layout)
+    }
+
+    /// Mutable [`Self::live_layout`].
+    pub(crate) fn live_layout_mut(&mut self) -> Option<&mut parley::layout::Layout<TextBrush>> {
+        self.built.get_mut().map(|built| &mut built.layout)
+    }
+
+    /// Clear the read flag, returning whether it was set.
+    pub(crate) fn take_recently_read(&self) -> bool {
+        self.recently_read.0.swap(false, Ordering::Relaxed)
+    }
+
+    /// Drop the shaped layout, if any; [`Self::layout`] rebuilds it from `inputs`.
+    pub(crate) fn evict(&mut self, inputs: EvictedLayout) {
+        if let Some(built) = self.built.take() {
+            self.text_kind
+                .get_or_init(|| TextKind::of(&built.content.text));
+        }
+        self.evicted = Some(Box::new(inputs));
+    }
+}
+
+/// Lends the contexts that rebuild text outside a layout pass, which has only the tree.
+pub(crate) fn with_rebuild_contexts<R>(
+    nodes: &crate::NodeTree,
+    f: impl FnOnce(&mut LayoutContext<TextBrush>, &mut FontContext) -> R,
+) -> R {
+    REBUILD_LAYOUT_CTX.with(|layout_ctx| {
+        let mut font_ctx = nodes.inline_rebuild.font_ctx.lock().unwrap();
+        f(&mut layout_ctx.borrow_mut(), &mut font_ctx)
+    })
+}
+
+fn rebuild_evicted_layout(nodes: &crate::NodeTree, evicted: &EvictedLayout) -> Box<Built> {
+    REBUILD_COUNT.with(|count| count.set(count.get() + 1));
+    let mut scratch = TextLayout::unfilled();
+    with_rebuild_contexts(nodes, |layout_ctx, font_ctx| {
+        crate::layout::construct::build_inline_layout_into(
+            nodes,
+            layout_ctx,
+            font_ctx,
+            &mut scratch,
+            evicted.scale,
+            evicted.node_id,
+        );
+    });
+    nodes.inline_rebuild.rebuilt.lock().unwrap().push(evicted.node_id);
+    let mut built = scratch.built.take().expect("built just above");
+    let Some(breaking) = evicted.breaking.as_deref() else {
+        return built;
+    };
+    let layout = &mut built.layout;
+    // The live layout sizes the root until it is evicted again, which
+    // summarizes it afresh.
+    drop(breaking.summary.take());
+    debug_assert_eq!(layout.inline_boxes().len(), breaking.boxes.len());
+    for (ibox, &(width, height, baseline)) in layout.inline_boxes_mut().zip(breaking.boxes.iter()) {
+        ibox.width = width;
+        ibox.height = height;
+        ibox.baseline = baseline;
+    }
+    layout.set_text_indent(breaking.indent, breaking.indent_options);
+    layout.break_all_lines(Some(breaking.max_advance));
+    if let Some(max_lines) = breaking.clamp_lines() {
+        layout.truncate_lines(max_lines);
+    }
+    if let Some(alignment) = breaking.alignment {
+        layout.align(
+            alignment,
+            AlignmentOptions {
+                align_when_overflowing: false,
+                last_line_alignment: breaking.last_line_alignment,
+            },
+        );
+    }
+    built
 }
 
 impl std::fmt::Debug for TextLayout {

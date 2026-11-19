@@ -55,8 +55,6 @@ export interface PageScriptState {
   document: ShimDocument | null;
   window: ShimWindow | null;
 
-  lastForceRestyleSeq: number;
-
   lastRecordScrollX: number;
   lastRecordScrollY: number;
   lastRecordViewportW: number;
@@ -74,7 +72,6 @@ export interface PageScriptState {
   scrollX: number;
   scrollY: number;
 
-  getOpLog: () => unknown[];
   setReadyState: (s: string) => void;
   drainCookieWrites: () => string[];
   setCookieString: (s: string) => void;
@@ -151,7 +148,6 @@ export const state: PageScriptState = {
   cookieKey: "",
   document: null,
   window: null,
-  lastForceRestyleSeq: -1,
   lastRecordScrollX: 0,
   lastRecordScrollY: 0,
   lastRecordViewportW: 0,
@@ -168,7 +164,6 @@ export const state: PageScriptState = {
   scrollX: 0,
   scrollY: 0,
 
-  getOpLog: () => [],
   setReadyState: () => {},
   drainCookieWrites: () => [],
   setCookieString: () => {},

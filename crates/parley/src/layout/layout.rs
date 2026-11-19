@@ -213,30 +213,27 @@ impl<B: Brush> Layout<B> {
     #[doc(hidden)]
     pub fn debug_clusters(&self) -> alloc::vec::Vec<(f32, u16, u16, u8)> {
         let shaped_text = &self.data.shaped_text;
-        let characters = shaped_text.characters();
         let clusters = shaped_text.shaped_clusters();
         shaped_text
             .runs()
             .iter()
             .flat_map(|run| {
                 let run_start = run.range.byte_range.start;
-                clusters[run.shaped_clusters_range.start as usize
-                    ..run.shaped_clusters_range.end as usize]
-                    .iter()
-                    .map(move |c| {
-                        let text_start =
-                            characters[c.chars_range().start as usize].text_byte_start as usize;
-                        (
-                            c.advance,
-                            (text_start - run_start) as u16,
-                            c.style_index,
-                            if c.has_inline_glyph() {
-                                0xFF
-                            } else {
-                                c.glyph_len()
-                            },
-                        )
-                    })
+                run.shaped_clusters_range.clone().map(move |ci| {
+                    let c = &clusters[ci as usize];
+                    let chars_start = shaped_text.cluster_chars_start(ci);
+                    let text_start = shaped_text.char_byte_range(chars_start).start;
+                    (
+                        c.advance,
+                        (text_start - run_start) as u16,
+                        shaped_text.cluster_style_index(ci),
+                        if c.has_inline_glyph() {
+                            0xFF
+                        } else {
+                            c.glyph_len()
+                        },
+                    )
+                })
             })
             .collect()
     }
@@ -267,6 +264,11 @@ impl<B: Brush> Layout<B> {
     pub fn set_text_indent(&mut self, amount: f32, options: IndentOptions) {
         self.data.indent_amount = amount;
         self.data.indent_options = options;
+    }
+
+    /// Returns the indent last passed to [`Self::set_text_indent`].
+    pub fn text_indent(&self) -> (f32, IndentOptions) {
+        (self.data.indent_amount, self.data.indent_options)
     }
 
     /// Returns line breaker to compute lines for the layout.

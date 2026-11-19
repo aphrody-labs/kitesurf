@@ -32,6 +32,7 @@ use vello_common::peniko::color::palette::css::BLACK;
 use vello_common::peniko::{BlendMode, Fill};
 use vello_common::pixmap::{Pixmap, PixmapMut};
 use vello_common::render_state::RenderState;
+use vello_common::tile::Tile;
 use vello_common::transforms::{RootTransforms, Transforms};
 use vello_common::util::into_fast_path_rect;
 
@@ -90,6 +91,48 @@ impl Resources {
     }
 }
 
+/// A recorded scene and its resources, kept alive while multiple regions are rasterized.
+#[derive(Debug)]
+pub struct PreparedRender {
+    context: RenderContext,
+    resources: Resources,
+    render_mode: RenderMode,
+}
+
+impl PreparedRender {
+    /// Consume a recorded scene and prepare its resources once for all regions.
+    pub fn new(
+        mut context: RenderContext,
+        mut resources: Resources,
+        render_mode: RenderMode,
+    ) -> Self {
+        assert!(
+            !context.dispatcher.has_layers(),
+            "some layers haven't been popped yet"
+        );
+        context.flush();
+        resources.before_render(render_mode);
+        Self {
+            context,
+            resources,
+            render_mode,
+        }
+    }
+
+    /// Render a region without evicting resources referenced by the recorded scene.
+    pub fn render_with<'a>(
+        &self,
+        target: impl Into<PixmapMut<'a>>,
+        mut settings: RasterizerSettings,
+    ) {
+        settings.assert_source_y_aligned();
+        // The resources were prepared for this mode, so a caller's mode would mismatch them.
+        settings.render_mode = self.render_mode;
+        self.context
+            .rasterize_prepared(target.into(), &self.resources, settings);
+    }
+}
+
 /// How the destination pixmap is initialized before rendering.
 pub type TargetInit = vello_common::TargetInit<AlphaColor<Srgb>>;
 
@@ -122,6 +165,8 @@ pub struct RasterizerSettings {
     ///
     /// See [`RenderContext::render_with`] for more information.
     pub offset: (u16, u16),
+    /// First scene row to rasterize; must be aligned to four pixels.
+    pub source_y: u16,
 }
 
 impl Default for RasterizerSettings {
@@ -131,7 +176,19 @@ impl Default for RasterizerSettings {
             target_init: TargetInit::Clear(AlphaColor::TRANSPARENT),
             pixel_format: PixelFormat::Rgba8,
             offset: (0, 0),
+            source_y: 0,
         }
+    }
+}
+
+impl RasterizerSettings {
+    /// Panic unless `source_y` starts on a tile row boundary.
+    fn assert_source_y_aligned(&self) {
+        assert_eq!(
+            self.source_y % Tile::HEIGHT,
+            0,
+            "source_y must be aligned to four pixels"
+        );
     }
 }
 
@@ -846,6 +903,7 @@ impl RenderContext {
         resources: &mut Resources,
         settings: RasterizerSettings,
     ) {
+        settings.assert_source_y_aligned();
         // TODO: Maybe we should move those checks into the dispatcher.
         assert!(
             !self.dispatcher.has_layers(),
@@ -853,10 +911,20 @@ impl RenderContext {
         );
 
         resources.before_render(settings.render_mode);
-        let mut target = target.into();
+        self.rasterize_prepared(target.into(), resources, settings);
+        // Cached glyphs may be evicted only after this rendering is complete.
+        resources.after_render();
+    }
+
+    fn rasterize_prepared(
+        &self,
+        mut target: PixmapMut<'_>,
+        resources: &Resources,
+        settings: RasterizerSettings,
+    ) {
         let target_fully_covered = settings.offset == (0, 0)
             && self.width >= target.width()
-            && self.height >= target.height();
+            && self.height.saturating_sub(settings.source_y) >= target.height();
         // If the scene covers the whole pixmap than packing will take care
         // of clearing everything anyway, so no reason to clear it explicitly
         // here.
@@ -895,12 +963,6 @@ impl RenderContext {
             &self.encoded_paints,
             &resources.image_registry,
         );
-        // TODO: We need to figure something out here API-wise. At the moment, the user can
-        // theoretically rasterize the same `RenderContext` multiple times without resetting in-between.
-        // However, if glyph caching is enabled, this method call could now evict that were previously
-        // assumed to exist in `RenderContext`, meaning that if the user rasterizes the same `RenderContext`
-        // again without resetting it, some of the cached glyphs might be stale and not exist anymore.
-        resources.after_render();
     }
 
     /// Return the width of the scene.
@@ -1035,7 +1097,9 @@ impl ImageResolver for ImageRegistry {
 mod tests {
     #[cfg(feature = "text")]
     use crate::peniko::{Blob, FontData};
-    use crate::{RasterizerSettings, RenderContext, Resources, TargetInit};
+    use crate::{
+        PreparedRender, RasterizerSettings, RenderContext, RenderMode, Resources, TargetInit,
+    };
     #[cfg(feature = "text")]
     use alloc::sync::Arc;
     use alloc::vec;
@@ -1054,6 +1118,27 @@ mod tests {
         b: 11,
         a: 255,
     };
+
+    /// Rows per band in the `source_rows_match_full_frame` test.
+    const BAND_ROWS: u16 = 8;
+
+    /// Render `height` rows of a scene into `out`, `BAND_ROWS` rows at a time.
+    ///
+    /// `render` receives the first scene row, the row count, and the destination slice for one
+    /// band.
+    fn render_in_bands(
+        height: u16,
+        stride: usize,
+        out: &mut [u8],
+        mut render: impl FnMut(u16, u16, &mut [u8]),
+    ) {
+        for start in (0..height).step_by(usize::from(BAND_ROWS)) {
+            let rows = (height - start).min(BAND_ROWS);
+            let offset = usize::from(start) * stride;
+            let end = offset + usize::from(rows) * stride;
+            render(start, rows, &mut out[offset..end]);
+        }
+    }
 
     fn red_pixel() -> PremulRgba8 {
         RED.premultiply().to_rgba8()
@@ -1082,6 +1167,61 @@ mod tests {
         ctx.fill_rect(&rect);
         ctx.flush();
         ctx
+    }
+
+    #[test]
+    fn source_rows_match_full_frame() {
+        let (width, height) = (41u16, 37u16);
+        let mut ctx = RenderContext::new(width, height);
+        ctx.set_paint(RED);
+        ctx.fill_rect(&Rect::new(2.3, 3.7, 35.6, 30.2));
+        ctx.set_paint(BLUE);
+        ctx.fill_rect(&Rect::new(7.2, 12.1, 40.0, 36.4));
+        ctx.flush();
+
+        let mut resources = Resources::new();
+        let stride = usize::from(width) * 4;
+        let mut full = vec![0; stride * usize::from(height)];
+        ctx.render(
+            PixmapMut::new(width, height, &mut full).unwrap(),
+            &mut resources,
+        );
+
+        // A band rendered without `source_y` repeats the top of the scene, so the comparisons
+        // below only prove anything if `source_y` moves the origin.
+        let band_len = usize::from(BAND_ROWS) * stride;
+        let mut top_band = vec![0; band_len];
+        ctx.render(
+            PixmapMut::new(width, BAND_ROWS, &mut top_band).unwrap(),
+            &mut resources,
+        );
+        assert_ne!(top_band, full[band_len..2 * band_len]);
+
+        let mut joined = vec![0; full.len()];
+        render_in_bands(height, stride, &mut joined, |source_y, rows, band| {
+            ctx.render_with(
+                PixmapMut::new(width, rows, band).unwrap(),
+                &mut resources,
+                RasterizerSettings {
+                    source_y,
+                    ..Default::default()
+                },
+            );
+        });
+        assert_eq!(joined, full);
+
+        let prepared = PreparedRender::new(ctx, resources, RenderMode::OptimizeSpeed);
+        joined.fill(0);
+        render_in_bands(height, stride, &mut joined, |source_y, rows, band| {
+            prepared.render_with(
+                PixmapMut::new(width, rows, band).unwrap(),
+                RasterizerSettings {
+                    source_y,
+                    ..Default::default()
+                },
+            );
+        });
+        assert_eq!(joined, full);
     }
 
     #[test]

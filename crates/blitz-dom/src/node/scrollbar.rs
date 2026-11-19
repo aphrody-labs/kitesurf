@@ -212,7 +212,7 @@ impl Node {
                 && thumb.contains(kurbo::Point::new(x, y))
             {
                 return Some(ScrollbarRef {
-                    node_id: self.id,
+                    node_id: self.id(),
                     axis,
                 });
             }

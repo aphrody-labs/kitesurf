@@ -228,7 +228,7 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         };
         // Fall back to the root element. A document without a root element (e.g. an
         // empty iframe sub-document) has no event target, so there is nothing to do.
-        let Some(target) = target.or_else(|| self.doc.inner().try_root_element().map(|el| el.id))
+        let Some(target) = target.or_else(|| self.doc.inner().try_root_element().map(|el| el.id()))
         else {
             return;
         };

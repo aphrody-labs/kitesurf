@@ -551,7 +551,8 @@ pub(crate) fn analyze_text(
     let contiguous_substrings = LineBreakSegmentIter::new(text, segments, first_segment);
 
     let mut global_offset = 0;
-    let mut line_boundary_positions: Vec<usize> = Vec::new();
+    let mut line_boundary_positions = core::mem::take(&mut analyzer.line_boundaries);
+    line_boundary_positions.clear();
 
     let data_sources = AnalysisDataSources::new();
 
@@ -807,6 +808,7 @@ pub(crate) fn analyze_text(
             properties.is_emoji_modifier_base(),
         ));
     }
+    analyzer.line_boundaries = line_boundary_positions;
 
     // `unicode-bidi: plaintext` re-runs first-strong per
     // paragraph; only text that needs bidi resolution at all does.
@@ -838,7 +840,7 @@ pub(crate) fn analyze_text(
 // resolver) resolves on the scratch resolver and splices back.
 fn resolve_per_paragraph(analyzer: &mut Analyzer, text: &str, data_sources: &AnalysisDataSources) {
     use icu_properties::props::BidiClass;
-    let Analyzer { bidi, bidi_scratch } = analyzer;
+    let Analyzer { bidi, bidi_scratch, .. } = analyzer;
     bidi.clear();
     let classify = |ch: char| {
         let bidi_class = data_sources.properties(ch).bidi_class();

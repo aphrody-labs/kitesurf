@@ -91,9 +91,10 @@ mod checks;
 ///
 /// The cache size was chosen by measuring style sharing and resulting performance on a few pages;
 /// sizes up to about 32 were giving good sharing improvements (e.g. 3x fewer styles having to be
-/// resolved than at size 8) and slight performance improvements.  Sizes larger than 32 haven't
-/// really been tested.
-pub const SHARING_CACHE_SIZE: usize = 32;
+/// resolved than at size 8) and slight performance improvements. On the HTML and TC39 specs, 64
+/// kept 2.8 and 1.5 MB fewer styles than 32 at no measurable cost; 128 kept 4.4 and 2.6 MB fewer
+/// but its longer linear scans made TC39 styling ~2% slower.
+pub const SHARING_CACHE_SIZE: usize = 64;
 
 /// The max amount of DOM depths we keep around to share styles across. See bug 2052731.
 const SHARING_MAX_LEVELS: usize = 8;
@@ -959,9 +960,13 @@ impl<E: TElement> StyleSharingCache<E> {
             // Rule nodes and styles are computed independent of the element's actual visitedness,
             // but at the end of the cascade (in `adjust_for_visited`) we do store the
             // RELEVANT_LINK_VISITED flag, so we can't share by rule node between visited and
-            // unvisited styles. We don't check for visitedness and just refuse to share for links
-            // entirely, so that visitedness doesn't affect timing.
-            if target.is_link() || candidate.element.is_link() {
+            // unvisited styles. We don't check for visitedness: we refuse to share between a link
+            // and a non-link, and between two links while visited styles are enabled, so that
+            // visitedness doesn't affect timing. Without visited styles no link is styled as
+            // visited, so links share by rule node with other links.
+            if target.is_link() != candidate.element.is_link()
+                || (target.is_link() && shared_context.visited_styles_enabled)
+            {
                 return None;
             }
 

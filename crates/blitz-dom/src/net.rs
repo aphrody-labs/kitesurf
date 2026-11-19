@@ -573,18 +573,32 @@ pub fn clear_unloaded_face(
     });
 }
 
-/// True when `family_lc` still has an undelivered face that would serve
-/// `want`, so matching must not substitute a loaded sibling of another
+/// True when `family` (any case) still has an undelivered face that would
+/// serve `want`, so matching must not substitute a loaded sibling of another
 /// style. A face with no `font-style` descriptor blocks any request: its
 /// style is whatever its own metadata says, which needs the bytes.
-pub fn face_pending_for_style(
-    family_lc: &str,
-    want: parley::fontique::FontStyle,
-) -> bool {
+pub fn face_pending_for_style(family: &str, want: parley::fontique::FontStyle) -> bool {
     UNLOADED_FACES.with(|c| {
-        c.borrow()
+        let faces = c.borrow();
+        // Every text span asks, so an ASCII name (lowercased bytewise) is compared in place.
+        if faces.is_empty() {
+            return false;
+        }
+        let family_lc = if family.is_ascii() {
+            None
+        } else {
+            Some(family.to_lowercase())
+        };
+        let is_family = |f: &str| match &family_lc {
+            Some(lc) => f == lc,
+            None => {
+                f.len() == family.len()
+                    && f.bytes().zip(family.bytes()).all(|(a, b)| a == b.to_ascii_lowercase())
+            }
+        };
+        faces
             .iter()
-            .any(|(f, s)| f == family_lc && s.is_none_or(|s| s == want))
+            .any(|(f, s)| is_family(f) && s.is_none_or(|s| s == want))
     })
 }
 

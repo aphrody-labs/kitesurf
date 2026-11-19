@@ -263,7 +263,7 @@ impl BaseDocument {
             ScrollTarget::Node(node_id) => Some(
                 self.nodes
                     .get(node_id)
-                    .and_then(|node| node.parent)
+                    .and_then(|node| node.parent_id())
                     .map_or(ScrollTarget::Viewport, ScrollTarget::Node),
             ),
         }
@@ -274,7 +274,7 @@ impl BaseDocument {
     fn canonical_scroll_target(&self, target: ScrollTarget) -> ScrollTarget {
         match target {
             ScrollTarget::Node(node_id)
-                if self.try_root_element().is_some_and(|el| el.id == node_id) =>
+                if self.try_root_element().is_some_and(|el| el.id() == node_id) =>
             {
                 ScrollTarget::Viewport
             }
@@ -299,8 +299,8 @@ impl BaseDocument {
                 }
 
                 if let Some(root) = self.try_root_element() {
-                    let root_id = root.id;
-                    let layout = *root.final_layout();
+                    let root_id = root.id();
+                    let layout = root.final_layout();
                     let scale = self.viewport.scale() as f64;
                     let event = BlitzScrollEvent {
                         scroll_top: offset.y,
@@ -327,13 +327,14 @@ impl BaseDocument {
                 };
 
                 let initial = *node.scroll_offset();
-                *node.scroll_offset_mut() = offset;
+                node.set_scroll_offset(offset);
                 if offset == initial {
                     return false;
                 }
 
-                let layout = *node.final_layout();
+                let layout = node.final_layout();
                 self.nodes.bump_geometry_generation();
+                self.note_inner_scroll(offset.y - initial.y);
                 let event = BlitzScrollEvent {
                     scroll_top: offset.y,
                     scroll_left: offset.x,
@@ -630,7 +631,7 @@ impl BaseDocument {
         let target =
             node.absolute_position(node.scroll_offset().x as f32, node.scroll_offset().y as f32);
         let target_size = node.final_layout().size;
-        let Some(root_id) = self.try_root_element().map(|root| root.id) else {
+        let Some(root_id) = self.try_root_element().map(|root| root.id()) else {
             return;
         };
         let scale = self.viewport.scale() as f64;
@@ -696,7 +697,7 @@ impl BaseDocument {
                 true
             }
             Some(None) => {
-                let root_id = self.root_element().id;
+                let root_id = self.root_element().id();
                 self.scroll_to(root_id, 0.0, 0.0, behavior);
                 true
             }

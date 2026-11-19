@@ -604,7 +604,7 @@ impl ElementCx<'_, '_> {
     }
 
     pub(crate) fn draw_table_borders(&self, scene: &mut impl PaintScene) {
-        let SpecialElementData::TableRoot(table) = &self.element.special_data else {
+        let SpecialElementData::TableRoot(table) = self.element.special_data() else {
             return;
         };
         // Borders are only handled at the table level when BorderCollapse::Collapse

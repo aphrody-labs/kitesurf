@@ -1,7 +1,7 @@
 use crate::{ImageCacheConfig, VelloCpuScenePainter};
 use anyrender::{ImageRenderer, RenderContext as AnyRenderContext};
 use debug_timer::debug_timer;
-use vello_cpu::{PixmapMut, RenderContext};
+use vello_cpu::{PixmapMut, PreparedRender, RenderContext, RenderMode};
 
 pub struct VelloCpuImageRenderer {
     scene: VelloCpuScenePainter,
@@ -22,6 +22,16 @@ impl VelloCpuImageRenderer {
     /// Drop all cached image conversions.
     pub fn clear_image_cache(&mut self) {
         self.scene.clear_image_cache();
+    }
+
+    /// Record one scene and retain its resources while rendering regions of it.
+    pub fn prepare<F: FnOnce(&mut VelloCpuScenePainter)>(mut self, draw_fn: F) -> PreparedRender {
+        draw_fn(&mut self.scene);
+        PreparedRender::new(
+            self.scene.render_ctx,
+            self.scene.resources,
+            RenderMode::OptimizeSpeed,
+        )
     }
 }
 

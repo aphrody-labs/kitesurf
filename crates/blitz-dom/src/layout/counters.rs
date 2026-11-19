@@ -289,10 +289,10 @@ impl BaseDocument {
         // A CSS reversed() scope extends to the origin's following
         // siblings; the HTML-implied list scope is subtree-only.
         if !subtree_only {
-            if let Some(parent) = self.nodes[origin].parent {
+            if let Some(parent) = self.nodes[origin].parent_id() {
                 let sibs = self.nodes[parent].flat_children();
-                if let Some(pos) = sibs.iter().position(|&s| s == origin) {
-                    let rest: Vec<NodeId> = sibs[pos + 1..].to_vec();
+                if let Some(pos) = sibs.position(origin) {
+                    let rest: Vec<NodeId> = sibs.iter().skip(pos + 1).collect();
                     self.scan_children(rest, name, is_list_item, &mut scan, budget);
                 }
             }
@@ -470,7 +470,7 @@ impl BaseDocument {
 
         let mut out = CounterOutput::default();
         let mut state = CounterState::default();
-        let root = self.root_element().id;
+        let root = self.root_element().id();
         self.resolve_counters_for(root, 0, &mut state, &mut out);
         self.damage_moved_counters(&out);
         self.counters = out;
@@ -518,7 +518,7 @@ impl BaseDocument {
                     .copied(),
             );
         for id in ordinals {
-            dirty.extend(self.nodes.get(id).and_then(|node| node.parent));
+            dirty.extend(self.nodes.get(id).and_then(|node| node.parent_id()));
         }
 
         dirty.retain(|&id| self.nodes.get(id).is_some());
@@ -705,7 +705,7 @@ impl BaseDocument {
 
         // Flat-tree children: slot assignment and shadow roots reorder
         // content, and counters follow the rendered (flat) order.
-        for &child in self.nodes[node_id].flat_children() {
+        for child in self.nodes[node_id].flat_children() {
             self.resolve_counters_for(child, depth + 1, state, out);
         }
 

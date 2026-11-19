@@ -25,7 +25,8 @@ pub struct LayoutContext<B: Brush = [u8; 4]> {
     pub(crate) rcx: ResolveContext,
     pub(crate) style_table: Vec<ResolvedStyle<B>>,
     pub(crate) style_runs: Vec<StyleRun>,
-    pub(crate) inline_boxes: Vec<LayoutInlineBox>,
+    /// Swapped into each built layout, so it shares the layout's thin vector type.
+    pub(crate) inline_boxes: thin_vec::ThinVec<LayoutInlineBox>,
 
     // Reusable text analysis
     pub(crate) analyzer: Analyzer,
@@ -51,7 +52,7 @@ impl<B: Brush> LayoutContext<B> {
             rcx: ResolveContext::default(),
             style_table: vec![],
             style_runs: vec![],
-            inline_boxes: vec![],
+            inline_boxes: thin_vec::ThinVec::new(),
             analyzer: Analyzer::new(),
             analysis: Analysis::new(),
             line_break: Vec::new(),

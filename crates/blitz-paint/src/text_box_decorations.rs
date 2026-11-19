@@ -64,7 +64,9 @@ pub(crate) fn paint_span_fragment_backgrounds(
             Some(s) => s,
             None => continue,
         };
-        let decos = &style.box_decorations;
+        let Some(decos) = style.box_decorations.as_deref() else {
+            continue;
+        };
         if decos.is_empty() {
             // Defensive: if a fragment was emitted with empty
             // decorations, there's nothing to paint. The line
@@ -99,7 +101,7 @@ pub(crate) fn paint_span_fragment_backgrounds(
             .background_color
             .resolve_to_absolute(&current_color)
             .as_srgb_color()
-            .multiply_alpha(crate::text::inline_opacity(doc, node.id, inline_root_id));
+            .multiply_alpha(crate::text::inline_opacity(doc, node.id(), inline_root_id));
         if bg.components[3] == 0.0 {
             continue;
         }
@@ -138,7 +140,9 @@ pub(crate) fn paint_span_fragment_borders(
             Some(s) => s,
             None => continue,
         };
-        let decos = &style.box_decorations;
+        let Some(decos) = style.box_decorations.as_deref() else {
+            continue;
+        };
         let top_w = decos.border_block_start_width as f64;
         let right_w = decos.border_inline_end_width as f64;
         let bottom_w = decos.border_block_end_width as f64;
@@ -162,7 +166,7 @@ pub(crate) fn paint_span_fragment_borders(
             _ => continue,
         };
         let current_color = primary.clone_color();
-        let opacity = crate::text::inline_opacity(doc, node.id, inline_root_id);
+        let opacity = crate::text::inline_opacity(doc, node.id(), inline_root_id);
         let border = primary.get_border();
         let top_color = border
             .border_top_color

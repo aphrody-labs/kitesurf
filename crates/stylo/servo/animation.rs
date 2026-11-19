@@ -1537,6 +1537,15 @@ impl ElementAnimationSet {
         let allow_discrete =
             style.transition_behavior_mod(index) == TransitionBehavior::AllowDiscrete;
 
+        // Without existing transitions, a discrete property cannot start one unless it is
+        // allowed, and converting both computed values below is not free.
+        if self.transitions.is_empty()
+            && !allow_discrete
+            && property_declaration_id.is_discrete_animatable()
+        {
+            return;
+        }
+
         // FIXME(emilio): Handle the case where old_style and new_style's writing mode differ.
         let Some(from) = AnimationValue::from_computed_values(*property_declaration_id, old_style)
         else {
@@ -1551,9 +1560,14 @@ impl ElementAnimationSet {
         let duration = style.transition_duration_mod(index).seconds() as f64;
         let delay = style.transition_delay_mod(index).seconds() as f64;
         let now = context.current_time_for_animations;
-        let transitionable = property_declaration_id.is_animatable()
-            && (allow_discrete || !property_declaration_id.is_discrete_animatable())
-            && (allow_discrete || from.interpolable_with(&to));
+
+        // Testing interpolability builds a midpoint, so only evaluate it in the branches that
+        // consume the result.
+        let is_transitionable = || {
+            property_declaration_id.is_animatable()
+                && (allow_discrete || !property_declaration_id.is_discrete_animatable())
+                && (allow_discrete || from.interpolable_with(&to))
+        };
 
         let mut existing_transition = self.transitions.iter_mut().find(|transition| {
             transition.property_animation.property_id() == *property_declaration_id
@@ -1584,7 +1598,7 @@ impl ElementAnimationSet {
             });
         if !has_running_transition
             && from != to
-            && transitionable
+            && is_transitionable()
             && no_completed_transition_or_end_values_differ
             && (duration + delay > 0.0)
         {
@@ -1647,7 +1661,7 @@ impl ElementAnimationSet {
             // > must cancel the running transition.
             let current_value = existing_transition.calculate_value(now);
             let transitionable_from_current_value =
-                transitionable && (allow_discrete || current_value.interpolable_with(&to));
+                is_transitionable() && (allow_discrete || current_value.interpolable_with(&to));
             if current_value == to || !transitionable_from_current_value {
                 existing_transition.state = AnimationState::Canceled;
                 self.dirty = true;

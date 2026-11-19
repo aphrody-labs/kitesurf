@@ -7,6 +7,7 @@ use core::ops::Range;
 
 use alloc::vec::Vec;
 use parlance::{BidiLevel, NormalizedCoord};
+use thin_vec::ThinVec;
 use skrifa::MetadataProvider;
 
 use crate::{
@@ -15,8 +16,11 @@ use crate::{
 };
 
 use super::{
-    Character, CharacterFlags, ShapedCluster, ShapedClusterFlags, Whitespace, atom::ShapedSlice,
+    Character, CharacterFlags, ShapedCluster, ShapedClusterFlags, Whitespace,
+    atom::{ShapedSlice, cluster_char_range},
+    data::ShapedIndex,
     shaper::ShapeOptions,
+    word_cache::RawGlyph,
 };
 
 /// Metrics that apply to the glyphs of a font.
@@ -149,9 +153,13 @@ pub struct ShapedText {
     runs: Vec<ShapedRun>,
     characters: Vec<Character>,
     shaped_clusters: Vec<ShapedCluster>,
-    glyphs: Vec<Glyph>,
+    // Thin: most clusters store their glyph inline and most fonts have no variations, so these
+    // stay empty for nearly every retained paragraph (4 bytes instead of 12 on wasm32).
+    glyphs: ThinVec<Glyph>,
     fonts: Vec<FontInstance>,
-    normalized_coords: Vec<NormalizedCoord>,
+    normalized_coords: ThinVec<NormalizedCoord>,
+    /// Cluster character starts and character byte offsets.
+    index: ShapedIndex,
 }
 
 impl ShapedText {
@@ -179,6 +187,19 @@ impl ShapedText {
         self.glyphs.clear();
         self.fonts.clear();
         self.normalized_coords.clear();
+        self.index.clear();
+    }
+
+    /// Release spare capacity retained by the shaped paragraph's buffers.
+    #[doc(hidden)]
+    pub fn shrink_to_fit(&mut self) {
+        self.runs.shrink_to_fit();
+        self.characters.shrink_to_fit();
+        self.shaped_clusters.shrink_to_fit();
+        self.glyphs.shrink_to_fit();
+        self.fonts.shrink_to_fit();
+        self.normalized_coords.shrink_to_fit();
+        self.index.shrink_to_fit();
     }
 
     /// Get a [`ShapedSlice`] of the run at `run_index`.
@@ -189,6 +210,7 @@ impl ShapedText {
 
             shaped_clusters: &self.shaped_clusters,
             glyphs: &self.glyphs,
+            index: &self.index,
 
             clusters: (
                 run.shaped_clusters_range.start,
@@ -213,9 +235,6 @@ impl ShapedText {
         for character in self.characters.iter_mut() {
             character.style_index = remap[character.style_index as usize];
         }
-        for shaped_cluster in self.shaped_clusters.iter_mut() {
-            shaped_cluster.style_index = remap[shaped_cluster.style_index as usize];
-        }
     }
 
     /// The character data of the text, in logical order.
@@ -235,6 +254,42 @@ impl ShapedText {
     #[inline(always)]
     pub fn shaped_clusters(&self) -> &[ShapedCluster] {
         &self.shaped_clusters
+    }
+
+    /// The character range of the shaped cluster at `cluster_idx`.
+    ///
+    /// `cluster_idx` indexes [`Self::shaped_clusters`].
+    #[inline(always)]
+    pub fn shaped_cluster_char_range(&self, cluster_idx: u32) -> Range<u32> {
+        cluster_char_range(
+            &self.index,
+            &self.shaped_clusters,
+            self.characters.len(),
+            cluster_idx,
+        )
+    }
+
+    /// The index of the first character of the shaped cluster at `cluster_idx` in
+    /// [`Self::characters`].
+    ///
+    /// This is also the position in the source text in the Unicode scalar value sense.
+    #[inline(always)]
+    pub fn cluster_chars_start(&self, cluster_idx: u32) -> u32 {
+        self.index
+            .cluster_chars_start(&self.shaped_clusters, cluster_idx as usize)
+    }
+
+    /// The style index of the shaped cluster at `cluster_idx`: that of its first character.
+    #[inline(always)]
+    pub fn cluster_style_index(&self, cluster_idx: u32) -> u16 {
+        self.characters[self.cluster_chars_start(cluster_idx) as usize].style_index
+    }
+
+    /// The byte range in the source text of the character at `char_idx` in [`Self::characters`].
+    #[inline]
+    pub fn char_byte_range(&self, char_idx: u32) -> Range<usize> {
+        self.index
+            .char_byte_range(&self.characters, char_idx as usize)
     }
 
     /// The shaped glyphs.
@@ -286,7 +341,7 @@ impl ShapedText {
         char_info: &[CharInfo],
         char_style_indices: &[u16],
         font: &FontInstance,
-        glyph_buffer: &harfrust::GlyphBuffer,
+        glyphs: &[RawGlyph],
         normalized_coords: &[harfrust::NormalizedCoord],
     ) {
         debug_assert_eq!(
@@ -294,8 +349,6 @@ impl ShapedText {
             text[range.byte_range.clone()].chars().count(),
             "The claimed character range and the text's covered byte range should agree"
         );
-
-        let glyph_infos = glyph_buffer.glyph_infos();
 
         let normalized_coords_range = {
             let start = self.normalized_coords.len();
@@ -333,7 +386,6 @@ impl ShapedText {
         // `HarfRust` returns glyphs in visual order, so we need to process them as such while
         // maintaining logical ordering of clusters.
 
-        let glyph_positions = glyph_buffer.glyph_positions();
         let scale_factor = options.font_size / units_per_em;
         let shaped_clusters_start = self.shaped_clusters.len();
 
@@ -344,41 +396,44 @@ impl ShapedText {
             .zip(&char_info[range.char_range.clone()])
             .zip(&char_style_indices[range.char_range.clone()])
         {
-            self.characters.push(Character {
-                text_byte_start: (range.byte_range.start + byte_offset) as u32,
+            let character = Character {
                 style_index: *style_index,
                 whitespace: Whitespace::from_char(ch),
                 flags: CharacterFlags::new(
                     ch,
                     info.is_word_boundary(),
                     info.is_soft_wrap_opportunity(),
-                ),
-                grapheme_start: info.is_grapheme_start(),
-            });
+                )
+                .with_grapheme_start(info.is_grapheme_start()),
+            };
+            let byte_start = (range.byte_range.start + byte_offset) as u32;
+            self.index
+                .push_char(&mut self.characters, character, byte_start);
         }
         // TODO: we force a grapheme break at the start of the run, as itemization could have split
         // a grapheme into two. Ideally, grapheme segmentation should be performed after
         // itemization, at which case this will always be true.
-        self.characters[characters_start].grapheme_start = true;
+        let first = &mut self.characters[characters_start];
+        first.flags = first.flags.with_grapheme_start(true);
 
         let glyphs_start = self.glyphs.len();
         if segment.bidi_level.is_ltr() {
             process_shaped_clusters(
+                &mut self.index,
                 &mut self.shaped_clusters,
                 &mut self.glyphs,
                 scale_factor,
-                glyph_infos.iter(),
-                glyph_positions.iter(),
+                glyphs.iter(),
                 &self.characters,
                 characters_start,
             );
         } else {
             process_shaped_clusters(
+                &mut self.index,
                 &mut self.shaped_clusters,
                 &mut self.glyphs,
                 scale_factor,
-                glyph_infos.iter().rev(),
-                glyph_positions.iter().rev(),
+                glyphs.iter().rev(),
                 &self.characters,
                 characters_start,
             );
@@ -453,18 +508,16 @@ pub struct ShapedRun {
 ///
 /// ## Input Parameters:
 /// * `scale_factor` - Scaling factor used to convert font units to the target size.
-/// * `glyph_infos` - `HarfRust` glyph information in logical order (i.e., reversed for RTL runs).
-/// * `glyph_positions` - `HarfRust` glyph positioning data in logical order (i.e., reversed for RTL
-///   runs).
+/// * `shaped` - Shaped glyphs in logical order (i.e., reversed for RTL runs).
 /// * `characters` must contain the shaped characters whose clusters we're now processing, starting at
 ///   index `characters_start`.
 /// * `characters_start` - See `characters`.
 fn process_shaped_clusters<'a>(
+    index: &mut ShapedIndex,
     shaped_clusters: &mut Vec<ShapedCluster>,
-    glyphs: &mut Vec<Glyph>,
+    glyphs: &mut ThinVec<Glyph>,
     scale_factor: f32,
-    glyph_infos: impl Iterator<Item = &'a harfrust::GlyphInfo>,
-    glyph_positions: impl Iterator<Item = &'a harfrust::GlyphPosition>,
+    shaped: impl Iterator<Item = &'a RawGlyph>,
     characters: &[Character],
     characters_start: usize,
 ) {
@@ -477,12 +530,12 @@ fn process_shaped_clusters<'a>(
         advance: f32,
     }
 
-    /// Flush `cluster`, whose characters end at `char_end`, onto `shaped_clusters`.
+    /// Flush `cluster` onto `shaped_clusters`.
     #[expect(clippy::cast_possible_truncation, reason = "Deferred")]
     fn flush(
         cluster: &mut Cluster,
-        char_end: usize,
         characters: &[Character],
+        index: &mut ShapedIndex,
         shaped_clusters: &mut Vec<ShapedCluster>,
     ) {
         let first_character = &characters[cluster.characters_start];
@@ -501,11 +554,10 @@ fn process_shaped_clusters<'a>(
             )
         };
 
-        shaped_clusters.push(ShapedCluster {
-            chars_range: (cluster.characters_start as u32, char_end as u32),
-            style_index: first_character.style_index,
+        let shaped_cluster = ShapedCluster {
+            chars_delta: 0,
             flags: ShapedClusterFlags::new(glyph_len)
-                .with_grapheme_start(first_character.grapheme_start)
+                .with_grapheme_start(first_character.is_grapheme_start())
                 // TODO: fill with actual shaping data (`parley` currently just ignores this)
                 .with_safe_to_break_before(false)
                 .with_inline_glyph(inline_glyph)
@@ -515,7 +567,9 @@ fn process_shaped_clusters<'a>(
                 ),
             glyph_offset,
             advance,
-        });
+        };
+        let chars_start = cluster.characters_start as u32;
+        index.push_cluster(shaped_clusters, shaped_cluster, chars_start);
     }
 
     let mut cluster = Cluster {
@@ -527,13 +581,13 @@ fn process_shaped_clusters<'a>(
         advance: 0.,
     };
 
-    for (glyph_info, glyph_pos) in glyph_infos.zip(glyph_positions) {
-        if glyph_info.cluster != cluster.id {
-            let char_end = characters_start + glyph_info.cluster as usize;
-            flush(&mut cluster, char_end, characters, shaped_clusters);
+    for shaped_glyph in shaped {
+        if shaped_glyph.cluster != cluster.id {
+            let char_end = characters_start + shaped_glyph.cluster as usize;
+            flush(&mut cluster, characters, index, shaped_clusters);
 
             cluster = Cluster {
-                id: glyph_info.cluster,
+                id: shaped_glyph.cluster,
                 characters_start: char_end,
                 glyphs_start: glyphs.len(),
                 glyphs: 0,
@@ -543,11 +597,11 @@ fn process_shaped_clusters<'a>(
         }
 
         let glyph = Glyph {
-            id: glyph_info.glyph_id,
-            x: (glyph_pos.x_offset as f32) * scale_factor,
+            id: shaped_glyph.id,
+            x: (shaped_glyph.x_offset as f32) * scale_factor,
             // Convert from font space (Y-up) to layout space (Y-down)
-            y: -(glyph_pos.y_offset as f32) * scale_factor,
-            advance: (glyph_pos.x_advance as f32) * scale_factor,
+            y: -(shaped_glyph.y_offset as f32) * scale_factor,
+            advance: (shaped_glyph.x_advance as f32) * scale_factor,
         };
         if cluster.glyphs == 0 && glyph.x == 0. && glyph.y == 0. {
             // Defer this potential zero-offset, single glyph cluster
@@ -563,7 +617,7 @@ fn process_shaped_clusters<'a>(
     }
 
     // Flush the final cluster.
-    flush(&mut cluster, characters.len(), characters, shaped_clusters);
+    flush(&mut cluster, characters, index, shaped_clusters);
 }
 
 #[cfg(test)]
@@ -713,10 +767,11 @@ mod tests {
         assert_eq!(soft_hyphen.advance, 0.);
 
         // The soft-hyphen's run should have a single cluster, and it must be without glyphs.
-        let clusters = shaped.run_slice(1).shaped_clusters();
+        let slice = shaped.run_slice(1);
+        let clusters = slice.shaped_clusters();
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].glyph_len(), 0);
-        assert_eq!(clusters[0].chars_range(), 1..2);
+        assert_eq!(slice.shaped_cluster_char_range(1), 1..2);
     }
 
     #[test]
@@ -738,18 +793,18 @@ mod tests {
         let shaped = shape_with_font("\u{0600}\u{0623}\u{064F}", NOTO_KUFI_ARABIC);
 
         let grapheme_starts: Vec<bool> =
-            shaped.characters.iter().map(|c| c.grapheme_start).collect();
+            shaped.characters.iter().map(|c| c.is_grapheme_start()).collect();
         assert_eq!(grapheme_starts, [true, true, false]);
 
         let clusters: Vec<(u32, u32, bool)> = shaped
             .shaped_clusters
             .iter()
-            .map(|c| {
-                (
-                    c.chars_range().start,
-                    c.chars_range().end,
-                    c.is_grapheme_start(),
-                )
+            .enumerate()
+            .map(|(index, c)| {
+                let char_range = shaped.shaped_cluster_char_range(
+                    u32::try_from(index).expect("test cluster count fits in u32"),
+                );
+                (char_range.start, char_range.end, c.is_grapheme_start())
             })
             .collect();
         assert_eq!(clusters, [(0, 1, true), (1, 3, true)]);
@@ -761,18 +816,18 @@ mod tests {
         let shaped = shape_with_font("ffi", ROBOTO);
 
         let grapheme_starts: Vec<bool> =
-            shaped.characters.iter().map(|c| c.grapheme_start).collect();
+            shaped.characters.iter().map(|c| c.is_grapheme_start()).collect();
         assert_eq!(grapheme_starts, [true, true, true]);
 
         let clusters: Vec<(u32, u32, bool)> = shaped
             .shaped_clusters
             .iter()
-            .map(|c| {
-                (
-                    c.chars_range().start,
-                    c.chars_range().end,
-                    c.is_grapheme_start(),
-                )
+            .enumerate()
+            .map(|(index, c)| {
+                let char_range = shaped.shaped_cluster_char_range(
+                    u32::try_from(index).expect("test cluster count fits in u32"),
+                );
+                (char_range.start, char_range.end, c.is_grapheme_start())
             })
             .collect();
         assert_eq!(clusters, [(0, 3, true)]);
@@ -783,10 +838,8 @@ mod tests {
         for newline in ["\n", "\r", "\u{2028}", "\u{2029}"] {
             let shaped = shape_with_font(&alloc::format!("a{newline}b"), ROBOTO);
 
-            let index = shaped
-                .shaped_clusters
-                .iter()
-                .position(|cluster| cluster.chars_range().start == 1)
+            let index = (0..shaped.shaped_clusters.len())
+                .position(|i| shaped.cluster_chars_start(i as u32) == 1)
                 .unwrap();
             let newline_cluster = &shaped.shaped_clusters[index];
             assert_eq!(newline_cluster.glyph_len(), 0, "newline glyphs are removed");
@@ -845,7 +898,7 @@ mod tests {
         );
 
         let grapheme_starts: Vec<bool> =
-            shaped.characters.iter().map(|c| c.grapheme_start).collect();
+            shaped.characters.iter().map(|c| c.is_grapheme_start()).collect();
         assert_eq!(grapheme_starts, [true, true]);
 
         // But note that, had we had three regional indicator symbols, like `[R0 R1 R2]` itemized as

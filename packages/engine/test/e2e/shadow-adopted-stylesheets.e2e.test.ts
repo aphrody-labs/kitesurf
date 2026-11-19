@@ -114,3 +114,27 @@ test("only constructed stylesheets can be adopted", async ({ page }) => {
     kept: 0,
   });
 });
+
+test("a disabled adopted sheet leaves the cascade until it is enabled", async ({ page }) => {
+  await setContent(page, `<div id="host"></div><p id="outside">outside</p>`);
+  const colors = await page.evaluate(() => {
+    const root = document.getElementById("host")!.attachShadow({ mode: "open" });
+    const sheet = new CSSStyleSheet({ disabled: true });
+    sheet.replaceSync("div, p { color: rgb(255, 0, 0); }");
+    root.adoptedStyleSheets = [sheet];
+    document.adoptedStyleSheets = [sheet];
+    root.innerHTML = "<style>div { color: rgb(0, 128, 0); }</style><div>inside</div>";
+    const inside = () => getComputedStyle(root.querySelector("div")!).color;
+    const outside = () => getComputedStyle(document.getElementById("outside")!).color;
+    const disabled = { inside: inside(), outside: outside() };
+    sheet.disabled = false;
+    const enabled = { inside: inside(), outside: outside() };
+    sheet.disabled = true;
+    return { disabled, enabled, disabledAgain: { inside: inside(), outside: outside() } };
+  });
+  expect(colors).toEqual({
+    disabled: { inside: "rgb(0, 128, 0)", outside: "rgb(0, 0, 0)" },
+    enabled: { inside: "rgb(255, 0, 0)", outside: "rgb(255, 0, 0)" },
+    disabledAgain: { inside: "rgb(0, 128, 0)", outside: "rgb(0, 0, 0)" },
+  });
+});

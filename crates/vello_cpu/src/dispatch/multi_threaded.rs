@@ -421,12 +421,14 @@ impl MultiThreadedDispatcher {
             let params = FineRenderParams {
                 scene_size: (scene_width, scene_height),
                 target_offset: settings.offset,
+                source_y: settings.source_y,
             };
 
             let mut regions = Regions::new(
                 &mut target,
                 params.scene_size,
                 params.target_offset,
+                params.source_y,
                 bucketer.rows().len(),
             );
             let fines = ThreadLocal::new();

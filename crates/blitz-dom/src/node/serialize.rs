@@ -4,10 +4,10 @@
 use std::collections::HashSet;
 
 use html_escape::{encode_quoted_attribute_to_string, encode_text_to_string};
-use markup5ever::{QualName, ns};
+use markup5ever::ns;
 use style_traits::values::ToCss;
 
-use super::{Node, NodeData};
+use super::{Attribute, Node, NodeData};
 
 #[derive(Clone, Copy)]
 enum OutputStyle {
@@ -48,26 +48,26 @@ fn svg_snapshot_id(index: u32, prefix: u32) -> String {
 }
 
 /// Writes an attribute's serialized name, per the HTML fragment serialization algorithm
-fn write_attr_name(name: &QualName, writer: &mut String) {
-    match name.ns {
+fn write_attr_name(attr: &Attribute, writer: &mut String) {
+    match *attr.namespace() {
         ns!() | ns!(html) => {}
         ns!(xml) => writer.push_str("xml:"),
-        ns!(xmlns) if name.local.as_str() == "xmlns" => {}
+        ns!(xmlns) if attr.name.local.as_str() == "xmlns" => {}
         ns!(xmlns) => writer.push_str("xmlns:"),
         ns!(xlink) => writer.push_str("xlink:"),
         _ => {
-            if let Some(prefix) = &name.prefix {
+            if let Some(prefix) = attr.prefix() {
                 writer.push_str(prefix);
                 writer.push(':');
             }
         }
     }
-    writer.push_str(&name.local);
+    writer.push_str(&attr.name.local);
 }
 
-fn is_xlink_ns_decl(name: &QualName) -> bool {
-    (name.ns == ns!(xmlns) && name.local.as_str() == "xlink")
-        || name.local.as_str() == "xmlns:xlink"
+fn is_xlink_ns_decl(attr: &Attribute) -> bool {
+    (*attr.namespace() == ns!(xmlns) && attr.name.local.as_str() == "xlink")
+        || attr.name.local.as_str() == "xmlns:xlink"
 }
 
 impl Node {
@@ -190,9 +190,9 @@ impl Node {
         };
         found
             || self
-                .children
+                .children()
                 .iter()
-                .any(|&child_id| self.tree()[child_id].subtree_contains(needle))
+                .any(|child_id| self.tree()[child_id].subtree_contains(needle))
     }
 
     /// Return the inline snapshot ID for a descendant, or `None` when it is outside this SVG.
@@ -207,7 +207,7 @@ impl Node {
     /// Return `None` when `target` is not a descendant element.
     pub fn svg_snapshot_index(&self, target: crate::NodeId) -> Option<u32> {
         fn walk(node: &Node, target: crate::NodeId, next: &mut u32) -> Option<u32> {
-            for &child_id in &node.children {
+            for child_id in node.children() {
                 let child = &node.tree()[child_id];
                 if !matches!(child.data, NodeData::Element(_)) {
                     continue;
@@ -246,7 +246,7 @@ impl Node {
     ) {
         const INDENT: &str = "  ";
         let style = opts.style;
-        let has_children = !self.children.is_empty();
+        let has_children = !self.children().is_empty();
         let current_color = opts
             .resolve_current_color
             .then(|| self.primary_styles())
@@ -267,11 +267,11 @@ impl Node {
                     }
                 }
                 let in_raw_text_element = self
-                    .parent
+                    .parent_id()
                     .and_then(|id| self.tree()[id].data.downcast_element())
                     .is_some_and(|el| {
                         // Documents are parsed with scripting disabled, so `<noscript>` is not raw text
-                        el.name.ns == ns!(html)
+                        *el.namespace() == ns!(html)
                             && matches!(
                                 el.name.local.as_ref(),
                                 "style"
@@ -303,7 +303,7 @@ impl Node {
 
                 if opts.declare_xlink_ns
                     && nesting == 0
-                    && !data.attrs().iter().any(|attr| is_xlink_ns_decl(&attr.name))
+                    && !data.attrs().iter().any(is_xlink_ns_decl)
                 {
                     writer.push_str(" xmlns:xlink=\"");
                     writer.push_str(XLINK_NS);
@@ -374,7 +374,7 @@ impl Node {
                         continue;
                     }
                     writer.push(' ');
-                    write_attr_name(&attr.name, writer);
+                    write_attr_name(attr, writer);
                     writer.push_str("=\"");
                     let mut value = std::borrow::Cow::Borrowed(attr.value.as_str());
                     if let Some(color) = &current_color {
@@ -382,7 +382,7 @@ impl Node {
                             value = std::borrow::Cow::Owned(value.replace("currentColor", color));
                         }
                     }
-                    if attr.name.ns == ns!() && &*attr.name.local == "style" {
+                    if *attr.namespace() == ns!() && &*attr.name.local == "style" {
                         if let Some(stamp) = style_stamp.take() {
                             value = std::borrow::Cow::Owned(format!("{value};{stamp}"));
                         }
@@ -414,7 +414,7 @@ impl Node {
                 }
 
                 if has_children {
-                    for &child_id in &self.children {
+                    for child_id in self.children() {
                         self.tree()[child_id].write_outer_html_in_style(
                             writer,
                             opts,
@@ -447,17 +447,14 @@ mod tests {
     #[test]
     fn snapshot_ids_do_not_satisfy_literal_fragment_references() {
         let mut doc = BaseDocument::new(DocumentConfig::default());
-        let root_id = doc.root_node().id;
+        let root_id = doc.root_node().id();
         let mut mutator = doc.mutate();
         let svg = mutator.create_element(qual_name!("svg", svg), vec![]);
         let earlier_rect = mutator.create_element(qual_name!("rect", svg), vec![]);
         let reference = "ks-svg-internal-0-3";
         let use_element = mutator.create_element(
             qual_name!("use", svg),
-            vec![Attribute {
-                name: qual_name!("href"),
-                value: format!("#{reference}"),
-            }],
+            vec![Attribute::new(qual_name!("href"), format!("#{reference}"))],
         );
         let target = mutator.create_element(qual_name!("rect", svg), vec![]);
         mutator.append_children(svg, &[earlier_rect, use_element, target]);
@@ -480,7 +477,7 @@ mod tests {
     #[test]
     fn snapshot_prefix_without_a_seed_in_the_source_is_the_first() {
         let mut doc = BaseDocument::new(DocumentConfig::default());
-        let root_id = doc.root_node().id;
+        let root_id = doc.root_node().id();
         let mut mutator = doc.mutate();
         let svg = mutator.create_element(qual_name!("svg", svg), vec![]);
         let rect = mutator.create_element(qual_name!("rect", svg), vec![]);

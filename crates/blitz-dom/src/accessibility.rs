@@ -16,6 +16,7 @@ impl BaseDocument {
             if node.is_hidden_from_accessibility_tree()
                 || node
                     .parent
+                    .get()
                     .map(|p| hidden_nodes.contains(&p))
                     .unwrap_or(false)
             {
@@ -24,6 +25,7 @@ impl BaseDocument {
             }
             let parent = node
                 .parent
+                .get()
                 .and_then(|parent_id| nodes.get_mut(&parent_id))
                 .map(|(_, parent)| parent)
                 .unwrap_or(&mut window);
@@ -101,7 +103,7 @@ impl BaseDocument {
     ) -> impl Iterator<Item = BlitzDomNodeId> + 'a {
         nodes_reference
             .split_ascii_whitespace()
-            .filter_map(|dom_id| self.nodes_to_id.get(dom_id)?.first().copied())
+            .filter_map(|dom_id| self.get_element_by_id(dom_id))
     }
 
     fn build_accessibility_node(
@@ -109,10 +111,10 @@ impl BaseDocument {
         node: &BlitzDomNode,
         parent: &mut AccessKitNode,
     ) -> (NodeId, AccessKitNode) {
-        let id = NodeId(node.id.as_u64());
+        let id = NodeId(node.id().as_u64());
 
         let mut builder = AccessKitNode::default();
-        if node.parent.is_none() {
+        if node.parent_id().is_none() {
             builder.set_role(Role::Window)
         } else if let Some(element_data) = node.element_data() {
             let name = element_data.name.local.to_string();
@@ -208,7 +210,7 @@ impl BlitzDomNode {
         match &self.data {
             NodeData::Text(data) => out.push(&data.content),
             NodeData::Element(..) | NodeData::AnonymousBlock(..) => {
-                for &child_id in &self.children {
+                for child_id in self.children() {
                     self.with(child_id).write_flat_text_content(out);
                 }
             }

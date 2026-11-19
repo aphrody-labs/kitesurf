@@ -2,10 +2,14 @@
 
 use blitz_traits::node_id::NodeId;
 use std::cell::RefCell;
+use std::collections::HashSet;
+use thin_vec::ThinVec;
 
 use debug_timer::debug_timer;
 use kurbo::{Affine, Rect};
 use parley::LayoutContext;
+
+use crate::node::EvictedLayout;
 use selectors::Element as _;
 use style::dom::TDocument;
 
@@ -33,6 +37,39 @@ use crate::{
     },
     node::{SpecialElementData, TextBrush},
 };
+
+struct UndisplayedLayoutTraversal {
+    pending: Vec<NodeId>,
+    visited: HashSet<NodeId>,
+}
+
+impl UndisplayedLayoutTraversal {
+    fn new(root_id: NodeId) -> Self {
+        Self {
+            pending: vec![root_id],
+            visited: HashSet::new(),
+        }
+    }
+
+    fn next(&mut self, doc: &BaseDocument) -> Option<NodeId> {
+        while let Some(id) = self.pending.pop() {
+            if !self.visited.insert(id) {
+                continue;
+            }
+            let Some(node) = doc.nodes.get(id) else {
+                continue;
+            };
+            self.pending.extend(node.children());
+            self.pending
+                .extend(node.assigned_nodes().into_iter().flatten().copied());
+            self.pending.extend(node.before());
+            self.pending.extend(node.after());
+            self.pending.extend(node.attached_shadow_root_id());
+            return Some(id);
+        }
+        None
+    }
+}
 
 fn snap_table_tracks(
     tracks: &mut taffy::DetailedGridTracksInfo<style::Atom>,
@@ -86,10 +123,49 @@ impl BaseDocument {
                 && node
                     .data
                     .downcast_element()
-                    .is_some_and(|element| element.inline_layout_data.is_none());
+                    .is_some_and(|element| element.inline_layout_data().is_none());
             if missing_inline_layout {
                 node.insert_damage(ALL_DAMAGE);
             }
+        }
+    }
+
+    /// Restyle the tree without box construction or layout, leaving damage for the next `resolve`.
+    /// False means the caller must still run `resolve`: no DOM, render-blocking resources are
+    /// pending, or a query container exists, since `@container` rules read laid-out sizes.
+    pub fn resolve_style(&mut self, current_time_for_animations: f64) -> bool {
+        if TDocument::as_node(&self.root_node())
+            .first_element_child()
+            .is_none()
+        {
+            return false;
+        }
+        self.process_pending_style_elements();
+        self.handle_messages();
+        if self.has_pending_critical_resources() {
+            return false;
+        }
+        self.flush_pending_device_changes();
+        self.flush_slot_assignments();
+        self.resolve_stylist(current_time_for_animations);
+        // Start web-font fetches from styles alone, as browsers do, so a caller can wait for the
+        // faces before the first layout instead of shaping every paragraph twice.
+        self.flush_needed_font_faces();
+        !self.size_container_seen
+    }
+
+    /// Reshape the inline contexts that web-font faces registered since the last resolve can
+    /// change. Deferred to here because the damage is only read in a resolve, and a page
+    /// receiving N faces would otherwise walk every node N times.
+    fn apply_pending_font_damage(&mut self) {
+        if !std::mem::take(&mut self.inline_contexts_stale) {
+            return;
+        }
+        let families = std::mem::take(&mut self.stale_font_families);
+        if std::mem::take(&mut self.stale_font_family_unknown) {
+            self.invalidate_inline_contexts();
+        } else {
+            self.invalidate_inline_contexts_using(&families);
         }
     }
 
@@ -132,12 +208,13 @@ impl BaseDocument {
                 .retain(|_, last| last.elapsed() < FADE_DELAY + FADE_DURATION);
         }
 
-        let root_node_id = self.root_element().id;
+        let root_node_id = self.root_element().id();
         debug_timer!(timer, feature = "log-phase-times");
 
         // Apply any device changes (viewport resize, zoom, color-scheme, etc)
         // accumulated since the last resolve as a single device rebuild.
         self.flush_pending_device_changes();
+        self.apply_pending_font_damage();
         // Slot assignment shapes the flat tree that styling and box
         // construction both consume; recompute before either runs.
         self.flush_slot_assignments();
@@ -166,6 +243,7 @@ impl BaseDocument {
         // Snapshot the sizes it styles against, so the pass after layout can
         // spot the containers whose answer is now stale.
         let container_sizes_before = container_sizes(self);
+        self.size_container_seen |= !container_sizes_before.is_empty();
 
         // CSS counters: list-item values + counter()/attr() pseudo content.
         // Needs computed styles; box construction consumes the side tables.
@@ -278,7 +356,7 @@ impl BaseDocument {
 
         // Clear all damage and dirty flags, walking only subtrees which are
         // marked as (potentially) containing damage.
-        let doc_node_id = self.root_node().id;
+        let doc_node_id = self.root_node().id();
         self.clear_damage_and_dirty_flags(doc_node_id);
         timer.record_time("c_damage");
 
@@ -290,6 +368,13 @@ impl BaseDocument {
         // restyle is picked up on the next resolve pass; a redraw is requested
         // if the hovered node actually changes.
         self.refresh_hover();
+
+        // After paint-tree and hover work, the last readers of this pass.
+        if self.layout_changed {
+            self.inline_eviction_layout_epoch += 1;
+        }
+        self.evict_offscreen_inline_layouts();
+        timer.record_time("evict");
 
         let mut subdoc_is_animating = false;
         for &node_id in &self.sub_document_nodes {
@@ -337,8 +422,8 @@ impl BaseDocument {
             let location = node.final_layout().location.map(|v| v as f64 * scale);
 
             let mut transform = Affine::translate((location.x, location.y));
-            if let Some(t) = node.transform().as_deref() {
-                transform *= *t
+            if let Some(t) = node.transform() {
+                transform *= t
             }
 
             let overflow = *node.scrollable_overflow();
@@ -351,7 +436,7 @@ impl BaseDocument {
         let h = self.nodes[node_id].final_layout().size.height as f64 * scale;
         let mut overflow = Rect::new(0.0, 0.0, w, h);
 
-        let layout_children = std::mem::take(self.nodes[node_id].layout_children.get_mut());
+        let layout_children = self.nodes[node_id].take_layout_children();
 
         if let Some(ref children) = layout_children {
             for &child_id in children {
@@ -365,8 +450,7 @@ impl BaseDocument {
                 overflow = overflow.union(child_rect_in_self);
             }
         }
-        let hoisted_children =
-            std::mem::take(&mut *self.nodes[node_id].hoisted_children.borrow_mut());
+        let hoisted_children = self.nodes[node_id].take_hoisted_children();
         for &child_id in &hoisted_children {
             if !self.nodes.contains_key(child_id) {
                 continue;
@@ -374,7 +458,7 @@ impl BaseDocument {
             let child_rect_in_self = self.resolve_transforms(child_id);
             overflow = overflow.union(child_rect_in_self);
         }
-        *self.nodes[node_id].hoisted_children.borrow_mut() = hoisted_children;
+        self.nodes[node_id].set_hoisted_children(hoisted_children);
         for pseudo in [self.nodes[node_id].before(), self.nodes[node_id].after()] {
             let Some(pseudo) = pseudo else { continue };
             if self.nodes[pseudo].is_out_of_flow() {
@@ -385,7 +469,7 @@ impl BaseDocument {
         }
 
         *self.nodes[node_id].scrollable_overflow_mut() = overflow;
-        *self.nodes[node_id].layout_children.get_mut() = layout_children;
+        self.nodes[node_id].set_layout_children(layout_children);
 
         let scaled_x = self.nodes[node_id].final_layout().location.x as f64 * scale;
         let scaled_y = self.nodes[node_id].final_layout().location.y as f64 * scale;
@@ -418,7 +502,7 @@ impl BaseDocument {
         // chains we actually set last time can be holding a stale value.
         for id in std::mem::take(&mut self.rehomed_reach_touched) {
             if let Some(node) = self.nodes.get(id) {
-                node.rehomed_reach.set(None);
+                node.set_rehomed_reach(None);
             }
         }
 
@@ -429,7 +513,9 @@ impl BaseDocument {
         host_ids.dedup();
         host_ids.retain(|&id| {
             self.nodes.contains_key(id)
-                && !self.nodes[id].rehomed_paint_children.borrow().is_empty()
+                && self.nodes[id]
+                    .rehomed_paint_children()
+                    .is_some_and(|nodes| !nodes.is_empty())
         });
 
         let union =
@@ -461,12 +547,15 @@ impl BaseDocument {
         for host_id in host_ids.iter().copied() {
             let mut rect: Option<(f32, f32, f32, f32)> = None;
             let rehomed: Vec<NodeId> = self.nodes[host_id]
-                .rehomed_paint_children
-                .borrow()
-                .iter()
-                .copied()
-                .filter(|id| self.nodes.contains_key(*id))
-                .collect();
+                .rehomed_paint_children()
+                .map(|nodes| {
+                    nodes
+                        .iter()
+                        .copied()
+                        .filter(|id| self.nodes.contains_key(*id))
+                        .collect()
+                })
+                .unwrap_or_default();
             for child_id in rehomed {
                 let child = &self.nodes[child_id];
                 let mut r = child.rehomed_paint_rect(host_id, scale);
@@ -484,12 +573,14 @@ impl BaseDocument {
             // shifting into each ancestor's coordinate space.
             let mut cur = host_id;
             for _ in 0..512 {
-                let node = &self.nodes[cur];
-                node.rehomed_reach
-                    .set(union(node.rehomed_reach.get(), rect));
+                {
+                    let node = &self.nodes[cur];
+                    node.set_rehomed_reach(union(node.rehomed_reach(), rect));
+                }
                 self.rehomed_reach_touched.push(cur);
+                let node = &self.nodes[cur];
                 let mut loc = node.final_layout().location;
-                let parent = match node.paint_parent_override.get() {
+                let parent = match node.paint_parent_override() {
                     Some(paint_parent) => {
                         let t = node.rehomed_paint_translate(paint_parent);
                         loc.x += t.x;
@@ -519,7 +610,7 @@ impl BaseDocument {
     }
 
     pub fn resolve_layout_children(&mut self) {
-        resolve_layout_children_recursive(self, self.root_node().id);
+        resolve_layout_children_recursive(self, self.root_node().id());
 
         fn resolve_layout_children_recursive(doc: &mut BaseDocument, node_id: NodeId) {
             // Anonymous blocks and pseudo-elements can be removed from the slab
@@ -542,7 +633,7 @@ impl BaseDocument {
                     && !node.has_damaged_descendants()
                     && !node.is_anonymous()
                     && node.attached_shadow_root_id().is_none()
-                    && node.layout_children.borrow().is_some()
+                    && node.layout_children().is_some()
                 {
                     return;
                 }
@@ -558,7 +649,7 @@ impl BaseDocument {
             // panics) leaves it None forever. Without this the
             // whole page silently resolves to zero height on the next pass.
             let ks_gate_open = damage.intersects(CONSTRUCT_FC | CONSTRUCT_BOX)
-                || doc.nodes[node_id].layout_children.borrow().is_none();
+                || doc.nodes[node_id].layout_children().is_none();
             if ks_gate_open {
                 //} || flags.contains(NodeFlags::IS_INLINE_ROOT) {
 
@@ -566,20 +657,27 @@ impl BaseDocument {
                 // previous construction round. They live only in the slab, so
                 // reconstructing without freeing them would leak a slab entry per
                 // anonymous block per reconstruction.
-                let old_anonymous_blocks = std::mem::take(&mut doc.nodes[node_id].anonymous_blocks);
+                let old_anonymous_blocks = doc.nodes[node_id].take_anonymous_blocks();
                 for anon_id in old_anonymous_blocks {
                     doc.deallocate_anonymous_block(anon_id);
                 }
 
+                // Child links are bare slot indexes, so a child that drops out of this list must
+                // not keep one to us: once our slot is reused, that index names the new
+                // occupant. Clear the previous links before collecting, which sets them again
+                // for the layout children and for the flattened inlines it links without
+                // listing.
+                BaseDocument::clear_previous_layout_parents(doc, node_id);
+
                 let mut collected = LayoutChildren::default();
                 collect_layout_children(doc, node_id, &mut collected);
                 let layout_children = collected.children;
-                doc.nodes[node_id].anonymous_blocks = collected.anonymous_blocks;
+                doc.nodes[node_id].set_anonymous_blocks(collected.anonymous_blocks);
                 // Float registration is a product of this node's boxes, so
                 // a rebuild retires the cache bust its last inline pass
                 // left behind: otherwise a block that ever held a float
                 // is locked out of taffy's cache for the document's life.
-                doc.nodes[node_id].placed_floats.set(false);
+                doc.nodes[node_id].set_placed_floats(false);
 
                 // Recurse into newly collected layout children
                 for child_id in layout_children.iter().copied() {
@@ -594,7 +692,7 @@ impl BaseDocument {
                     if !doc.nodes.contains_key(child_id) {
                         continue;
                     }
-                    doc.nodes[child_id].layout_parent.set(Some(node_id));
+                    doc.nodes[child_id].set_layout_parent_id(Some(node_id));
                     if let Some(mut data) = doc.nodes[child_id]
                         .try_stylo_element_data_mut()
                         .and_then(|s| s.get_mut())
@@ -604,14 +702,13 @@ impl BaseDocument {
                     }
                 }
 
-                *doc.nodes[node_id].layout_children.borrow_mut() = Some(layout_children.clone());
-                // *doc.nodes[node_id].paint_children.borrow_mut() = Some(layout_children);
+                doc.nodes[node_id].set_layout_children(Some(layout_children.clone()));
 
                 damage.remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                 // damage.insert(RestyleDamage::RELAYOUT | RestyleDamage::REPAINT);
             } else {
                 //if damage.contains(CONSTRUCT_DESCENDENT) {
-                let layout_children = doc.nodes[node_id].layout_children.borrow_mut().take();
+                let layout_children = doc.nodes[node_id].take_layout_children();
                 if let Some(layout_children) = layout_children {
                     for child_id in layout_children.iter().copied() {
                         // Anonymous blocks and pseudo-elements can be removed from the
@@ -620,10 +717,10 @@ impl BaseDocument {
                             continue;
                         }
                         resolve_layout_children_recursive(doc, child_id);
-                        doc.nodes[child_id].layout_parent.set(Some(node_id));
+                        doc.nodes[child_id].set_layout_parent_id(Some(node_id));
                     }
 
-                    *doc.nodes[node_id].layout_children.borrow_mut() = Some(layout_children);
+                    doc.nodes[node_id].set_layout_children(Some(layout_children));
                 }
 
                 // damage.remove(CONSTRUCT_DESCENDENT);
@@ -631,6 +728,63 @@ impl BaseDocument {
             }
 
             doc.nodes[node_id].set_damage(damage);
+        }
+    }
+
+    /// Clear `layout_parent` on the children of the previous layout pass, before this pass links
+    /// the ones it keeps. A link is a bare slot index, so one left behind names the next occupant
+    /// of our slot.
+    fn clear_previous_layout_parents(doc: &mut BaseDocument, node_id: NodeId) {
+        let previous = doc.nodes[node_id].take_layout_children();
+        for child_id in previous.unwrap_or_default() {
+            if let Some(child) = doc.nodes.get_mut(child_id) {
+                if child.layout_parent_id() == Some(node_id) {
+                    child.set_layout_parent_id(None);
+                }
+            }
+        }
+    }
+
+    /// Drop the box state of a subtree whose root has just become `display: none`.
+    /// Stylo clears the descendants' styles; without this their inline layouts,
+    /// layout output and anonymous blocks stay allocated until the subtree is
+    /// shown again. Showing it rebuilds all of them from fresh styles.
+    pub(crate) fn release_undisplayed_layout(&mut self, root_id: NodeId) {
+        let mut traversal = UndisplayedLayoutTraversal::new(root_id);
+        while let Some(id) = traversal.next(self) {
+            let Some(node) = self.nodes.get_mut(id) else {
+                continue;
+            };
+            let is_root = id == root_id;
+            let anonymous_blocks = node.take_anonymous_blocks();
+            node.take_layout_children();
+            node.take_paint_children();
+            node.clear_hoisted_children();
+            node.clear_sc_contribution_cache();
+            node.set_oof_containing_block(None);
+            node.set_stacking_context(None);
+            if !is_root {
+                // The root keeps its own box slot: its container may still list it.
+                node.set_layout_parent_id(None);
+            }
+            // A user or script set the scroll offset, and layout cannot rebuild
+            // it, so a scrolled box keeps its layout data while hidden. Text and
+            // comment nodes have no layout data, so ask only element kinds.
+            let scrolled = node.element_data().is_some_and(|_| {
+                let offset = node.scroll_offset();
+                offset.x != 0.0 || offset.y != 0.0
+            });
+            if let Some(element) = node.element_data_mut() {
+                element.set_inline_layout_data(None);
+                element.set_list_item_data(None);
+                element.clear_detailed_layout_info();
+                if !is_root && !scrolled {
+                    element.layout_data.take();
+                }
+            }
+            for anon_id in anonymous_blocks {
+                self.deallocate_anonymous_block(anon_id);
+            }
         }
     }
 
@@ -645,15 +799,15 @@ impl BaseDocument {
             if !node.flags.contains(NodeFlags::IS_IN_DOCUMENT) {
                 continue;
             }
-            let Some(children) = node.layout_children.borrow().clone() else {
+            let Some(children) = node.layout_children() else {
                 continue;
             };
-            for child_id in children {
+            for &child_id in children.iter() {
                 let Some(child) = self.nodes.get(child_id) else {
                     panic!("layout child {child_id:?} of {parent_id:?} is not in the slab");
                 };
                 debug_assert_eq!(
-                    child.layout_parent.get(),
+                    child.layout_parent_id(),
                     Some(parent_id),
                     "layout_parent of {child_id:?} does not point at its layout container {parent_id:?}"
                 );
@@ -667,6 +821,30 @@ impl BaseDocument {
         // Deduplicate deferred tasks by node_id to avoid redundant work
         deferred_construction_nodes.sort_unstable_by_key(|task| task.node_id);
         deferred_construction_nodes.dedup_by_key(|task| task.node_id);
+
+        // With eviction on, each root is built inside its own layout call and
+        // may be evicted right after, so the pass never holds all shaped text.
+        if self.inline_layout_eviction_viewports.is_some() {
+            for task in deferred_construction_nodes {
+                let ConstructionTaskData::InlineLayout(mut layout) = task.data;
+                layout.content_widths = None;
+                layout.last_break_width = f32::NAN;
+                layout.set_unbuilt(EvictedLayout {
+                    node_id: task.node_id,
+                    scale: self.viewport.scale(),
+                    breaking: None,
+                });
+                layout.mark_root_indexed();
+                self.nodes[task.node_id].clear_layout_cache();
+                self.nodes[task.node_id]
+                    .element_data_mut()
+                    .unwrap()
+                    .set_inline_layout_data(Some(layout));
+                self.inline_roots.push(task.node_id);
+                self.inline_roots_put = true;
+            }
+            return;
+        }
 
         #[cfg(feature = "parallel-construct")]
         let iter = deferred_construction_nodes.into_par_iter();
@@ -730,13 +908,15 @@ impl BaseDocument {
 
         for result in results {
             match result.data {
-                ConstructionTaskResultData::InlineLayout(layout) => {
+                ConstructionTaskResultData::InlineLayout(mut layout) => {
+                    layout.mark_root_indexed();
                     self.nodes[result.node_id].clear_layout_cache();
                     self.nodes[result.node_id]
                         .element_data_mut()
                         .unwrap()
-                        .inline_layout_data = Some(layout);
+                        .set_inline_layout_data(Some(layout));
                     self.inline_roots.push(result.node_id);
+                    self.inline_roots_put = true;
                 }
             }
         }
@@ -758,7 +938,7 @@ impl BaseDocument {
             height: AvailableSpace::Definite(size.height.to_f32_px()),
         };
 
-        let root_element_id = crate::taffy_node_id(self.root_element().id);
+        let root_element_id = crate::taffy_node_id(self.root_element().id());
 
         // println!("\n\nRESOLVE LAYOUT\n===========\n");
 
@@ -779,7 +959,7 @@ impl BaseDocument {
         //
         // Except a rebuilt inline tree has no lines, and the restore pass below
         // re-breaks it against final_layout, which must not be a stale box.
-        if state.layout_changed || state.inline_roots.len() != state.inline_roots_settled {
+        if state.layout_changed || state.inline_roots_put {
             #[cfg(feature = "writing-mode")]
             state.physicalise_and_round_layout(root_element_id);
             #[cfg(not(feature = "writing-mode"))]
@@ -793,7 +973,7 @@ impl BaseDocument {
                 let Some(element) = node.element_data() else {
                     continue;
                 };
-                let SpecialElementData::TableRoot(table) = &element.special_data else {
+                let SpecialElementData::TableRoot(table) = element.special_data() else {
                     continue;
                 };
                 let Some(mut grid_info) = table.computed_grid_info.borrow().clone() else {
@@ -849,7 +1029,7 @@ impl BaseDocument {
     fn restore_clobbered_inline_breaks(&mut self) {
         // Debug builds run the walk anyway and assert it finds nothing, so
         // every test exercises the skip predicate rather than trusting it.
-        let skip = !self.layout_changed && self.inline_roots.len() == self.inline_roots_settled;
+        let skip = !self.layout_changed && !self.inline_roots_put;
         if skip && !cfg!(debug_assertions) {
             return;
         }
@@ -868,7 +1048,7 @@ impl BaseDocument {
             !self.nodes.iter().any(|(id, n)| n
                 .data
                 .downcast_element()
-                .is_some_and(|el| el.inline_layout_data.is_some())
+                .is_some_and(|el| el.inline_layout_data().is_some())
                 && roots.binary_search(&id).is_err()),
             "an inline root escaped the index; its breaks would never restore"
         );
@@ -882,7 +1062,7 @@ impl BaseDocument {
             let Some(inline) = node
                 .data
                 .downcast_element()
-                .and_then(|el| el.inline_layout_data.as_ref())
+                .and_then(|el| el.inline_layout_data())
             else {
                 return false;
             };
@@ -897,8 +1077,15 @@ impl BaseDocument {
             }
             true
         });
+        // Construction pushes every root again, so a rebuild of the whole
+        // page can leave the capacity several times the deduplicated length,
+        // and growth by doubling alone can leave up to twice it.
+        if roots.capacity() > roots.len() + roots.len() / 4 {
+            roots.shrink_to(roots.len() + roots.len() / 8);
+        }
         self.inline_roots_settled = roots.len();
         self.inline_roots = roots;
+        self.inline_roots_put = false;
         debug_assert!(
             !skip || stale.is_empty(),
             "skipped a resolve with {} stale inline roots: {stale:?}",
@@ -907,5 +1094,88 @@ impl BaseDocument {
         for (id, content_w) in stale {
             self.rebreak_inline_to_width(id, content_w);
         }
+    }
+}
+
+#[cfg(test)]
+mod undisplayed_layout_tests {
+    use super::*;
+    use crate::node::ShadowRootMode;
+    use crate::{Attribute, DocumentConfig, qual_name};
+    use blitz_traits::shell::{ColorScheme, Viewport};
+    use std::collections::HashSet;
+
+    #[test]
+    fn nested_slot_edges_visit_each_reachable_node_once_and_release_layout() {
+        const NESTED_HOSTS: usize = 4;
+
+        let mut doc = BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        });
+        let document_root = doc.root_node().id();
+        let block_style = || Attribute::new(qual_name!("style"), "display:block".to_string());
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html"), vec![block_style()]);
+        let body = mutator.create_element(qual_name!("body"), vec![block_style()]);
+        let outer = mutator.create_element(qual_name!("div"), vec![block_style()]);
+        mutator.append_children(body, &[outer]);
+        mutator.append_children(html, &[body]);
+        mutator.append_children(document_root, &[html]);
+
+        let mut expected_nodes = vec![outer];
+        let mut slot_assignments = Vec::new();
+        let mut host = outer;
+        for _ in 0..NESTED_HOSTS {
+            let shadow_root = mutator.attach_shadow(host, ShadowRootMode::Open);
+            let slot = mutator.create_element(qual_name!("slot"), vec![block_style()]);
+            mutator.append_children(shadow_root, &[slot]);
+            let child = mutator.create_element(qual_name!("div"), vec![block_style()]);
+            mutator.append_children(host, &[child]);
+            expected_nodes.extend([shadow_root, slot, child]);
+            slot_assignments.push((slot, child));
+            host = child;
+        }
+        drop(mutator);
+        doc.resolve(0.0);
+
+        for (slot, child) in &slot_assignments {
+            assert!(
+                doc.nodes[*slot]
+                    .assigned_nodes()
+                    .is_some_and(|assigned| assigned.contains(child)),
+                "slot must reach its host's light child"
+            );
+        }
+
+        let expected: HashSet<_> = expected_nodes.into_iter().collect();
+        let mut traversal = UndisplayedLayoutTraversal::new(outer);
+        let mut visited = Vec::new();
+        while let Some(id) = traversal.next(&doc) {
+            visited.push(id);
+        }
+        let unique: HashSet<_> = visited.iter().copied().collect();
+        assert_eq!(
+            visited.len(),
+            expected.len(),
+            "cleanup traversal must visit each reachable node once"
+        );
+        assert_eq!(unique, expected);
+
+        assert!(doc.nodes[host]
+            .element_data()
+            .unwrap()
+            .layout_data
+            .get()
+            .is_some());
+        doc.mutate()
+            .set_attribute(outer, qual_name!("style"), "display:none");
+        doc.resolve(0.0);
+        assert!(doc.nodes[host]
+            .element_data()
+            .unwrap()
+            .layout_data
+            .get()
+            .is_none());
     }
 }

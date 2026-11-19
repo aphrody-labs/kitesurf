@@ -454,6 +454,14 @@ fn build_into_layout<B: Brush>(
     core::mem::swap(&mut layout.data.inline_boxes, &mut lcx.inline_boxes);
 
     compute_span_edges(layout, lcx);
+
+    // These buffers live with every paragraph; shaping's growth slack does not.
+    layout.data.styles.shrink_to_fit();
+    layout.data.style_metrics.shrink_to_fit();
+    layout.data.inline_boxes.shrink_to_fit();
+    layout.data.runs.shrink_to_fit();
+    layout.data.items.shrink_to_fit();
+    layout.data.shaped_text.shrink_to_fit();
 }
 
 /// Computes per-cluster inline advances and span boundaries for
@@ -516,7 +524,6 @@ fn compute_span_edges<B: Brush>(layout: &mut Layout<B>, lcx: &LayoutContext<B>) 
     }
 
     let shaped_text = &data.shaped_text;
-    let characters = shaped_text.characters();
     let clusters = shaped_text.shaped_clusters();
 
     // Shaped clusters are stored in logical order, so their
@@ -527,10 +534,10 @@ fn compute_span_edges<B: Brush>(layout: &mut Layout<B>, lcx: &LayoutContext<B>) 
     let mut style_run_idx = 0;
     let mut first_last: alloc::vec::Vec<Option<(usize, usize)>> =
         alloc::vec![None; lcx.style_runs.len()];
-    for (ci, cluster) in clusters.iter().enumerate() {
-        let abs = characters[cluster.chars_range().start as usize].text_byte_start as usize;
-        while style_run_idx < lcx.style_runs.len()
-            && lcx.style_runs[style_run_idx].range.end <= abs
+    for ci in 0..clusters.len() {
+        let chars_start = shaped_text.cluster_chars_start(ci as u32);
+        let abs = shaped_text.char_byte_range(chars_start).start;
+        while style_run_idx < lcx.style_runs.len() && lcx.style_runs[style_run_idx].range.end <= abs
         {
             style_run_idx += 1;
         }

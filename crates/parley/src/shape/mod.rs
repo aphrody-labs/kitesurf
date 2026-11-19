@@ -195,7 +195,12 @@ pub(crate) fn shape_text<'a, B: Brush>(
         .map(|b| &b.inline_box)
         .enumerate()
         .peekable();
-    for shaped_run_idx in 0..layout.data.shaped_text.runs().len() {
+    // Each shaped run makes one run and one item, and each inline box one item: reserve them
+    // so the layout's vectors do not grow by doubling and then shrink at the end of the build.
+    let shaped_runs = layout.data.shaped_text.runs().len();
+    layout.data.runs.reserve(shaped_runs);
+    layout.data.items.reserve(shaped_runs + inline_boxes.len());
+    for shaped_run_idx in 0..shaped_runs {
         let shaped_run = &layout.data.shaped_text.runs()[shaped_run_idx];
         let run_text_byte_start = shaped_run.range.byte_range.start;
         let run_style_index = char_style_indices[shaped_run.range.char_range.start];

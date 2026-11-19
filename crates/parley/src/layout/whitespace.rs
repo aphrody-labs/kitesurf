@@ -96,16 +96,18 @@ pub(crate) fn atom_hanging_advance<B: Brush>(
     let mut last_cluster = true;
     let mut all_hang = true;
     let mut hanging = 0.;
-    for cluster in atom.shaped_clusters().iter().rev() {
-        let cluster_hangs = slice
-            .characters_in(cluster.chars_range())
-            .iter()
-            .all(|character| {
-                whitespace_hangs(
-                    character.whitespace,
-                    &styles[character.style_index as usize],
-                )
-            });
+    for (cluster_idx, cluster) in atom
+        .shaped_clusters_range()
+        .zip(atom.shaped_clusters().iter())
+        .rev()
+    {
+        let char_range = slice.shaped_cluster_char_range(cluster_idx);
+        let cluster_hangs = slice.characters_in(char_range).iter().all(|character| {
+            whitespace_hangs(
+                character.whitespace,
+                &styles[character.style_index as usize],
+            )
+        });
         if !cluster_hangs {
             all_hang = false;
             break;

@@ -11,6 +11,10 @@ pub(crate) struct DocumentUrl {
 }
 
 impl DocumentUrl {
+    pub(crate) fn same_url(&self, other: &DocumentUrl) -> bool {
+        ServoArc::ptr_eq(&self.base_url, &other.base_url)
+    }
+
     /// Create a stylo `UrlExtraData` from the URL
     pub(crate) fn url_extra_data(&self) -> UrlExtraData {
         UrlExtraData(ServoArc::clone(&self.base_url))

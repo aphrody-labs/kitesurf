@@ -361,9 +361,9 @@ struct BlockItem {
     /// Whether margins can be collapsed through this item
     can_be_collapsed_through: bool,
 
-    /// Pending layout for in-flow non-floated items. Held back from `set_unrounded_layout` so the
-    /// post-loop `align-content` pass in `compute_inner` can shift `location.y` before commit.
-    final_layout: Option<Layout>,
+    /// The border-box location of a laid out in-flow or floated item. Its layout is committed
+    /// as soon as it is computed, unless `align-content` will shift it (see `place_item_layout`).
+    location: Option<Point<f32>>,
 
     /// Out-of-flow candidates bubbled out of this (in-flow) item's subtree. Anchors are relative
     /// to the item's border box until they are translated at merge time.
@@ -632,6 +632,11 @@ fn compute_inner(
     let resolved_border =
         raw_border.resolve_or_zero(Some(percentage_resolution_width), |val, basis| tree.calc(val, basis));
     let resolved_content_box_inset = resolved_padding + resolved_border + scrollbar_gutter;
+
+    // Item layouts that `align-content` will shift, by item index; empty when it is `normal`.
+    let hold_layouts = align_content.keyword != AlignContentKeyword::Normal;
+    let mut held_layouts: Vec<(usize, Layout)> = Vec::new();
+
     #[cfg_attr(not(feature = "content_size"), allow(unused_mut))]
     let (
         mut inflow_overflow_rect,
@@ -643,6 +648,7 @@ fn compute_inner(
         tree,
         run_mode,
         &mut items,
+        hold_layouts.then_some(&mut held_layouts),
         container_outer_width,
         container_percentage_resolution_height,
         content_box_inset,
@@ -682,59 +688,59 @@ fn compute_inner(
         own_margins_collapse_with_children.end && !height_constrained_by_min_height;
 
     // Apply `align-content` to in-flow non-floated items if requested. The per-item layouts were
-    // held back in `item.final_layout` so that this step can shift `location.y` before tree commit.
+    // held back in `held_layouts` so that this step can shift `location.y` before tree commit.
     //
     // For block layout the entire stack of in-flow children is treated as a single alignment
     // subject. That means distribution keywords (`space-between`, `space-around`,
     // `space-evenly`, `stretch`) must invoke the single-subject fallback unconditionally —
     // which is what passing `num_items = 1` to `apply_alignment_fallback` does. The whole
     // group then shifts by one offset, with zero inter-item gap.
-    if align_content.keyword != AlignContentKeyword::Normal {
+    if hold_layouts {
         let container_inner_height = container_outer_height - resolved_content_box_inset.vertical_axis_sum();
         let inflow_content_height = intrinsic_outer_height - resolved_content_box_inset.vertical_axis_sum();
         let free_space = container_inner_height - inflow_content_height;
         let group_offset = compute_block_align_content_offset(align_content, free_space);
         baselines.first = baselines.first.map(|baseline| baseline + group_offset);
         baselines.last = baselines.last.map(|baseline| baseline + group_offset);
+
+        // Shift the held layouts and the item locations recorded from them by the same offset,
+        // so out-of-flow anchors resolve against the aligned positions.
+        for (_, layout) in held_layouts.iter_mut() {
+            layout.location.y += group_offset;
+        }
         for item in items.iter_mut() {
-            if let Some(layout) = item.final_layout.as_mut() {
-                layout.location.y += group_offset;
+            if let Some(location) = item.location.as_mut() {
+                location.y += group_offset;
             }
             // The static positions of out-of-flow children move with the in-flow content
             if item.position.is_out_of_flow() {
                 item.static_position.y += group_offset;
             }
         }
-        let any_in_flow = items.iter().any(|item| item.final_layout.is_some());
-        if any_in_flow {
-            #[cfg(feature = "content_size")]
-            {
-                inflow_overflow_rect = Rect::ZERO;
-                for item in items.iter() {
-                    if let Some(layout) = item.final_layout.as_ref() {
-                        let contribution_location = if direction.is_rtl() {
-                            Point {
-                                x: container_outer_width
-                                    - (layout.location.x + layout.size.width)
-                                    - resolved_border.right,
-                                y: layout.location.y - resolved_border.top,
-                            }
-                        } else {
-                            Point {
-                                x: layout.location.x - resolved_border.left,
-                                y: layout.location.y - resolved_border.top,
-                            }
-                        };
-                        inflow_overflow_rect = inflow_overflow_rect.union(compute_scrollable_overflow_contribution(
-                            contribution_location,
-                            layout.size,
-                            layout.scrollable_overflow_rect,
-                            item.overflow,
-                            item.contain,
-                            is_scroll_container,
-                        ));
+
+        // The in-flow overflow rect was accumulated from the unshifted layouts.
+        #[cfg(feature = "content_size")]
+        if !held_layouts.is_empty() {
+            // Alignment moved the layouts, so rebuild it from their shifted positions.
+            inflow_overflow_rect = Rect::ZERO;
+            for (index, layout) in held_layouts.iter() {
+                let item = &items[*index];
+                let contribution_location = if direction.is_rtl() {
+                    Point {
+                        x: container_outer_width - (layout.location.x + layout.size.width) - resolved_border.right,
+                        y: layout.location.y - resolved_border.top,
                     }
-                }
+                } else {
+                    Point { x: layout.location.x - resolved_border.left, y: layout.location.y - resolved_border.top }
+                };
+                inflow_overflow_rect = inflow_overflow_rect.union(compute_scrollable_overflow_contribution(
+                    contribution_location,
+                    layout.size,
+                    layout.scrollable_overflow_rect,
+                    item.overflow,
+                    item.contain,
+                    is_scroll_container,
+                ));
             }
         }
     }
@@ -787,10 +793,8 @@ fn compute_inner(
     }
 
     // Commit deferred child layouts to the tree.
-    for item in items.iter() {
-        if let Some(layout) = item.final_layout.as_ref() {
-            tree.set_unrounded_layout(item.node_id, layout);
-        }
+    for (index, layout) in held_layouts.iter() {
+        tree.set_unrounded_layout(items[*index].node_id, layout);
     }
 
     // 4. Collect out-of-flow candidates in document order (direct out-of-flow children plus
@@ -826,8 +830,8 @@ fn compute_inner(
             });
         } else if !item.oof_candidates.is_empty() {
             // Translate anchors from item-relative to container-relative coordinates
-            if let Some(layout) = item.final_layout.as_ref() {
-                item.oof_candidates.translate(layout.location);
+            if let Some(location) = item.location {
+                item.oof_candidates.translate(location);
             }
             candidates.append(&mut item.oof_candidates);
         }
@@ -876,13 +880,19 @@ fn compute_inner(
 }
 
 /// Create a `Vec` of `BlockItem` structs where each item in the `Vec` represents a child of the current node
-#[inline]
+// Kept out of line: inlined, its locals join the frame of the recursive block layout, and on
+// wasm32's 1 MiB stack nested blocks then overflow about 25 levels sooner.
+#[inline(never)]
 fn generate_item_list(
     tree: &impl LayoutBlockContainer,
     node: NodeId,
     node_inner_size: Size<Option<f32>>,
 ) -> Vec<BlockItem> {
-    tree.child_ids(node)
+    // The display:none filter hides the length from the iterator, so an unreserved `Vec` would
+    // grow by doubling: reserve the child count, an upper bound, so a block with many children
+    // allocates once.
+    let mut items = Vec::with_capacity(tree.child_count(node));
+    let children = tree.child_ids(node)
         .map(|child_node_id| (child_node_id, tree.get_block_child_style(child_node_id)))
         .filter(|(_, style)| style.box_generation_mode() != BoxGenerationMode::None)
         .enumerate()
@@ -965,11 +975,12 @@ fn generate_item_list(
                 computed_size: Size::zero(),
                 static_position: Point::zero(),
                 can_be_collapsed_through: false,
-                final_layout: None,
+                location: None,
                 oof_candidates: OofCandidates::new(),
             }
-        })
-        .collect()
+        });
+    items.extend(children);
+    items
 }
 
 /// Resolve the `stretch` sizing keyword for an item's height style. In the block axis the
@@ -1075,6 +1086,25 @@ fn determine_content_based_container_width(
     max_child_width
 }
 
+/// Commit a laid out item's layout to the tree, or hold it back for the `align-content` pass to
+/// shift before the commit. A size computation commits nothing.
+fn place_item_layout(
+    tree: &mut impl LayoutBlockContainer,
+    run_mode: RunMode,
+    held_layouts: Option<&mut Vec<(usize, Layout)>>,
+    index: usize,
+    item: &mut BlockItem,
+    layout: Layout,
+) {
+    item.location = Some(layout.location);
+
+    if let Some(held) = held_layouts {
+        held.push((index, layout));
+    } else if run_mode == RunMode::PerformLayout {
+        tree.set_unrounded_layout(item.node_id, &layout);
+    }
+}
+
 /// Compute each child's final size and position
 #[inline]
 #[allow(clippy::too_many_arguments)]
@@ -1082,6 +1112,7 @@ fn perform_final_layout_on_in_flow_children(
     tree: &mut impl LayoutBlockContainer,
     run_mode: RunMode,
     items: &mut [BlockItem],
+    mut held_layouts: Option<&mut Vec<(usize, Layout)>>,
     container_outer_width: f32,
     container_percentage_resolution_height: Option<f32>,
     content_box_inset: Rect<f32>,
@@ -1144,7 +1175,7 @@ fn perform_final_layout_on_in_flow_children(
     #[cfg(not(feature = "float_layout"))]
     let has_active_floats = false;
 
-    for item in items.iter_mut() {
+    for (index, item) in items.iter_mut().enumerate() {
         if item.position.is_out_of_flow() {
             let x = match direction {
                 Direction::Ltr => resolved_content_box_inset.left,
@@ -1240,9 +1271,7 @@ fn perform_final_layout_on_in_flow_children(
                 // println!("BLOCK FLOATED BOX ({:?}) {:?}", item.node_id, float_direction);
                 // println!("w:{} h:{} x:{}, y:{}", margin_box.width, margin_box.height, location.x, location.y);
 
-                // Deferred to the post-loop pass in `compute_inner` (like in-flow items) so that
-                // `align-content` can shift `location.y` before the layout is committed.
-                item.final_layout = Some(Layout {
+                let layout = Layout {
                     order: item.order,
                     size: item_layout.size,
                     #[cfg(feature = "content_size")]
@@ -1252,7 +1281,8 @@ fn perform_final_layout_on_in_flow_children(
                     padding: item.padding,
                     border: item.border,
                     margin: item_non_auto_margin,
-                });
+                };
+                place_item_layout(tree, run_mode, held_layouts.as_deref_mut(), index, item, layout);
 
                 #[cfg(feature = "content_size")]
                 {
@@ -1767,9 +1797,7 @@ fn perform_final_layout_on_in_flow_children(
                 margin
             };
 
-            // Defer `set_unrounded_layout` to the post-loop pass in `compute_inner` so that
-            // `align-content` can shift `location.y` before the layout is committed to the tree.
-            item.final_layout = Some(Layout {
+            let layout = Layout {
                 order: item.order,
                 size: item_layout.size,
                 #[cfg(feature = "content_size")]
@@ -1779,7 +1807,8 @@ fn perform_final_layout_on_in_flow_children(
                 padding: item.padding,
                 border: item.border,
                 margin: resolved_margin,
-            });
+            };
+            place_item_layout(tree, run_mode, held_layouts.as_deref_mut(), index, item, layout);
 
             #[cfg(feature = "content_size")]
             {

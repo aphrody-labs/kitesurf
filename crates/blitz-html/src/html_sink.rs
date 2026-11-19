@@ -6,20 +6,38 @@ use html5ever::tree_builder::TreeBuilderOpts;
 use std::borrow::Cow;
 use std::cell::{Cell, Ref, RefCell, RefMut};
 
-use blitz_dom::node::Attribute;
-use blitz_dom::{DocumentMutator, HtmlParserProvider, NodeId};
+use blitz_dom::node::{Attribute, Attributes};
+use blitz_dom::{DocumentMutator, ElementData, HtmlParserProvider, NodeId};
 use html5ever::{
-    QualName,
+    LocalName, Namespace, QualName,
+    interface::ElemName,
     tendril::{StrTendril, TendrilSink},
     tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink},
 };
 
-/// Convert an html5ever Attribute which uses tendril for its value to a blitz Attribute
-/// which uses String.
+/// Convert an html5ever Attribute, which uses tendril for its value, to a blitz Attribute.
 fn html5ever_to_blitz_attr(attr: html5ever::Attribute) -> Attribute {
-    Attribute {
-        name: attr.name,
-        value: attr.value.to_string(),
+    Attribute::new(attr.name, &*attr.value)
+}
+
+/// An element's name as the parser sees it, borrowed from the document.
+pub struct SinkElemName<'a>(Ref<'a, ElementData>);
+
+impl std::fmt::Debug for SinkElemName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.0.expanded_name())
+    }
+}
+
+impl ElemName for SinkElemName<'_> {
+    #[inline(always)]
+    fn ns(&self) -> &Namespace {
+        self.0.namespace()
+    }
+
+    #[inline(always)]
+    fn local_name(&self) -> &LocalName {
+        &self.0.name.local
     }
 }
 
@@ -72,7 +90,19 @@ fn contains_xhtml_marker(source: &[u8]) -> bool {
         .any(|window| window == b"XHTML" || window == b"xhtml")
 }
 
-fn doctype_info(source: &[u8]) -> Option<(usize, bool)> {
+/// Set when the sniff below reads past the end of its input, so a longer input could change
+/// its answer. Setting it too eagerly only delays a streaming caller's decision.
+type RanOut = Cell<bool>;
+
+/// `bytes.starts_with(literal)`, noting when `bytes` ends while it could still match.
+fn starts_with_or_ran_out(bytes: &[u8], literal: &[u8], ran_out: &RanOut) -> bool {
+    if bytes.len() < literal.len() && literal.starts_with(bytes) {
+        ran_out.set(true);
+    }
+    bytes.starts_with(literal)
+}
+
+fn doctype_info(source: &[u8], ran_out: &RanOut) -> Option<(usize, bool)> {
     const DOCTYPE: &[u8] = b"<!DOCTYPE";
     if !source.starts_with(DOCTYPE) {
         return None;
@@ -92,9 +122,9 @@ fn doctype_info(source: &[u8]) -> Option<(usize, bool)> {
             continue;
         }
         // Comment text is not evidence that the doctype identifies XHTML.
-        if source[i..].starts_with(b"<!--") {
+        if starts_with_or_ran_out(&source[i..], b"<!--", ran_out) {
             mentions_xhtml |= contains_xhtml_marker(&source[segment_start..i]);
-            i = skip_past(source, i + 4, b"-->")?;
+            i = skip_past(source, i + 4, b"-->", ran_out)?;
             segment_start = i;
             continue;
         }
@@ -112,6 +142,7 @@ fn doctype_info(source: &[u8]) -> Option<(usize, bool)> {
         }
         i += 1;
     }
+    ran_out.set(true);
     None
 }
 
@@ -119,25 +150,32 @@ fn is_xml_whitespace(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
 }
 
-fn skip_xml_whitespace(bytes: &[u8], mut i: usize) -> usize {
+fn skip_xml_whitespace(bytes: &[u8], mut i: usize, ran_out: &RanOut) -> usize {
     while bytes.get(i).is_some_and(|byte| is_xml_whitespace(*byte)) {
         i += 1;
+    }
+    if i >= bytes.len() {
+        ran_out.set(true);
     }
     i
 }
 
 /// The index just past the first `terminator` at or after `from`.
-fn skip_past(bytes: &[u8], from: usize, terminator: &[u8]) -> Option<usize> {
-    let end = bytes
-        .get(from..)?
-        .windows(terminator.len())
-        .position(|window| window == terminator)?;
+fn skip_past(bytes: &[u8], from: usize, terminator: &[u8], ran_out: &RanOut) -> Option<usize> {
+    let end = bytes.get(from..).and_then(|rest| {
+        rest.windows(terminator.len())
+            .position(|window| window == terminator)
+    });
+    let Some(end) = end else {
+        ran_out.set(true);
+        return None;
+    };
     Some(from + end + terminator.len())
 }
 
-fn find_html_root_tag(source: &str, start: usize) -> Option<&str> {
+fn find_html_root_tag<'a>(source: &'a str, start: usize, ran_out: &RanOut) -> Option<&'a str> {
     let bytes = source.as_bytes();
-    let tag_start = skip_prolog_misc(source, start)?;
+    let tag_start = skip_prolog_misc(source, start, ran_out)?;
     if bytes.get(tag_start) != Some(&b'<') {
         return None;
     }
@@ -149,6 +187,9 @@ fn find_html_root_tag(source: &str, start: usize) -> Option<&str> {
         .is_some_and(|byte| !is_xml_whitespace(*byte) && !matches!(byte, b'/' | b'>'))
     {
         name_end += 1;
+    }
+    if name_end == bytes.len() {
+        ran_out.set(true);
     }
     if !bytes[name_start..name_end].eq_ignore_ascii_case(b"html") {
         return None;
@@ -168,15 +209,18 @@ fn find_html_root_tag(source: &str, start: usize) -> Option<&str> {
             }
         }
     }
+    ran_out.set(true);
     None
 }
 
 fn html_root_tag_has_xhtml_namespace(tag: &str) -> bool {
     let bytes = tag.as_bytes();
     let mut i = 5;
+    // The tag is whole through its `>`, so the sniff's exhaustion notes are discarded.
+    let ran_out = &RanOut::new(false);
 
     while i < bytes.len() {
-        i = skip_xml_whitespace(bytes, i);
+        i = skip_xml_whitespace(bytes, i, ran_out);
         if matches!(bytes.get(i), Some(b'>' | b'/')) {
             i += 1;
             continue;
@@ -194,11 +238,11 @@ fn html_root_tag_has_xhtml_namespace(tag: &str) -> bool {
         }
         let name = &bytes[name_start..i];
 
-        i = skip_xml_whitespace(bytes, i);
+        i = skip_xml_whitespace(bytes, i, ran_out);
         let mut value = None;
         if bytes.get(i) == Some(&b'=') {
             i += 1;
-            i = skip_xml_whitespace(bytes, i);
+            i = skip_xml_whitespace(bytes, i, ran_out);
             let Some(&quote @ (b'"' | b'\'')) = bytes.get(i) else {
                 return false;
             };
@@ -221,18 +265,19 @@ fn html_root_tag_has_xhtml_namespace(tag: &str) -> bool {
     false
 }
 
-fn root_element_has_xhtml_namespace(source: &str, start: usize) -> bool {
-    find_html_root_tag(source, start).is_some_and(html_root_tag_has_xhtml_namespace)
+fn root_element_has_xhtml_namespace(source: &str, start: usize, ran_out: &RanOut) -> bool {
+    find_html_root_tag(source, start, ran_out).is_some_and(html_root_tag_has_xhtml_namespace)
 }
 
-fn skip_prolog_misc(source: &str, mut i: usize) -> Option<usize> {
+fn skip_prolog_misc(source: &str, mut i: usize, ran_out: &RanOut) -> Option<usize> {
     let bytes = source.as_bytes();
     loop {
-        i = skip_xml_whitespace(bytes, i);
-        if source.get(i..)?.starts_with("<!--") {
-            i = skip_past(bytes, i + 4, b"-->")?;
-        } else if source.get(i..)?.starts_with("<?") {
-            i = skip_past(bytes, i + 2, b"?>")?;
+        i = skip_xml_whitespace(bytes, i, ran_out);
+        let rest = bytes.get(i..)?;
+        if starts_with_or_ran_out(rest, b"<!--", ran_out) {
+            i = skip_past(bytes, i + 4, b"-->", ran_out)?;
+        } else if starts_with_or_ran_out(rest, b"<?", ran_out) {
+            i = skip_past(bytes, i + 2, b"?>", ran_out)?;
         } else {
             return Some(i);
         }
@@ -242,34 +287,59 @@ fn skip_prolog_misc(source: &str, mut i: usize) -> Option<usize> {
 /// Returns whether the source should use the XML parser based on its XML declaration,
 /// doctype text, or the default namespace on its root `<html>` tag.
 pub fn is_xhtml_document(html: &str) -> bool {
+    sniff_xhtml(html, &RanOut::new(false))
+}
+
+/// [`is_xhtml_document`] for every document that starts with `prefix`, or `None` while the
+/// answer could still depend on what follows it. Lets a streaming reader decide early.
+pub fn is_xhtml_document_prefix(prefix: &str) -> Option<bool> {
+    let ran_out = RanOut::new(false);
+    let is_xhtml = sniff_xhtml(prefix, &ran_out);
+    (!ran_out.get()).then_some(is_xhtml)
+}
+
+/// Whether the document opens with an XML declaration: `<?xml` then whitespace or `?`.
+fn starts_with_xml_declaration(bytes: &[u8], ran_out: &RanOut) -> bool {
+    if !starts_with_or_ran_out(bytes, b"<?xml", ran_out) {
+        return false;
+    }
+    let Some(&next) = bytes.get(5) else {
+        ran_out.set(true);
+        return false;
+    };
+    next.is_ascii_whitespace() || next == b'?'
+}
+
+fn sniff_xhtml(html: &str, ran_out: &RanOut) -> bool {
+    if html.is_empty() {
+        ran_out.set(true);
+    }
     let html = html.strip_prefix('\u{feff}').unwrap_or(html);
-    let is_xml_declaration = html
-        .strip_prefix("<?xml")
-        .and_then(|rest| rest.as_bytes().first())
-        .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'?');
-    if is_xml_declaration {
+    let bytes = html.as_bytes();
+
+    if starts_with_xml_declaration(bytes, ran_out) {
         return true;
     }
 
-    let Some(prolog_start) = skip_prolog_misc(html, 0) else {
+    let Some(prolog_start) = skip_prolog_misc(html, 0, ran_out) else {
         return false;
     };
-    if html[prolog_start..].starts_with("<!DOCTYPE") {
-        let Some((doctype_end, mentions_xhtml)) = doctype_info(&html.as_bytes()[prolog_start..])
-        else {
-            return false;
-        };
-        // Text/html pages often put `<html xmlns=...>` on the line after
-        // `<!DOCTYPE html>`; only a root on the doctype's line routes to XML.
-        let root_search_start = prolog_start + doctype_end;
-        let root_on_doctype_line = skip_prolog_misc(html, root_search_start)
-            .is_some_and(|root_start| !html[root_search_start..root_start].contains('\n'));
-        return mentions_xhtml
-            || (root_on_doctype_line
-                && root_element_has_xhtml_namespace(html, root_search_start));
+    if !starts_with_or_ran_out(&bytes[prolog_start..], b"<!DOCTYPE", ran_out) {
+        return root_element_has_xhtml_namespace(html, prolog_start, ran_out);
     }
 
-    root_element_has_xhtml_namespace(html, prolog_start)
+    let Some((doctype_end, mentions_xhtml)) = doctype_info(&bytes[prolog_start..], ran_out) else {
+        return false;
+    };
+    // Text/html pages often put `<html xmlns=...>` on the line after
+    // `<!DOCTYPE html>`; only a root on the doctype's line routes to XML.
+    let root_search_start = prolog_start + doctype_end;
+    let root_on_doctype_line = skip_prolog_misc(html, root_search_start, ran_out)
+        .is_some_and(|root_start| !html[root_search_start..root_start].contains('\n'));
+
+    mentions_xhtml
+        || (root_on_doctype_line
+            && root_element_has_xhtml_namespace(html, root_search_start, ran_out))
 }
 
 impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
@@ -346,7 +416,7 @@ impl<'m, 'doc> DocumentHtmlParser<'m, 'doc> {
 
         // html5ever creates a new fragment root node under the document node and parses the nodes into that fragment root.
         // So here we move the children of the fragment root to element_id and then drop the fragment root.
-        let document_id = mutr.doc.root_node().id;
+        let document_id = mutr.doc.root_node().id();
         let fragment_root_id = mutr.last_child_id(document_id).unwrap();
         let child_ids = mutr.child_ids(fragment_root_id);
         mutr.append_children(element_id, &child_ids);
@@ -361,7 +431,7 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
     type Handle = NodeId;
 
     type ElemName<'a>
-        = Ref<'a, QualName>
+        = SinkElemName<'a>
     where
         Self: 'a;
 
@@ -377,14 +447,14 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
     }
 
     fn get_document(&self) -> Self::Handle {
-        self.document_mutator.borrow().doc.root_node().id
+        self.document_mutator.borrow().doc.root_node().id()
     }
 
     fn elem_name<'a>(&'a self, target: &'a Self::Handle) -> Self::ElemName<'a> {
-        Ref::map(self.document_mutator.borrow(), |docm| {
+        SinkElemName(Ref::map(self.document_mutator.borrow(), |docm| {
             docm.element_name(*target)
                 .expect("TreeSink::elem_name called on a node which is not an element!")
-        })
+        }))
     }
 
     fn create_element(
@@ -393,7 +463,7 @@ impl<'m, 'doc> TreeSink for DocumentHtmlParser<'m, 'doc> {
         attrs: Vec<html5ever::Attribute>,
         _flags: ElementFlags,
     ) -> Self::Handle {
-        let attrs = attrs.into_iter().map(html5ever_to_blitz_attr).collect();
+        let attrs: Attributes = attrs.into_iter().map(html5ever_to_blitz_attr).collect();
         self.mutr().create_element(name, attrs)
     }
 
@@ -568,4 +638,43 @@ fn xhtml_sniff_uses_only_the_doctype_and_root_namespace() {
         "\u{feff}<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \
          \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\"><html></html>"
     ));
+}
+
+#[test]
+fn xhtml_prefix_sniff_agrees_with_the_whole_document_at_every_split() {
+    for html in [
+        "",
+        "\u{feff}",
+        "text<html xmlns=\"http://www.w3.org/1999/xhtml\">",
+        "<!doctype html><html lang=\"en\"><body>",
+        "<!DOCTYPE html><!-- XHTML --><html></html>",
+        "<!DOCTYPE html [<!-- XHTML -->]><html></html>",
+        "<!DOCTYPE html><htmlish xmlns=\"http://www.w3.org/1999/xhtml\"></htmlish>",
+        "<!DOCTYPE html><html data-note=\"xhtml\"></html>",
+        "<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\"><p>&nbsp;</p></html>",
+        "<?xml-stylesheet href=\"theme.css\"?><html></html>",
+        "<?xml?><html/>",
+        "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\"><html></html>",
+        "<!DOCTYPE html [<!ENTITY marker \"xhtml\">]><html></html>",
+        "<!DOCTYPE html><!-- root follows --><html data-x=\"<b>\" \
+         xmlns=\"http://www.w3.org/1999/xhtml\"></html>",
+        " \r\n<!-- é --><?pi x?>\n<html xmlns='http://www.w3.org/1999/xhtml'></html>",
+        "\u{feff}<?xml version=\"1.0\"?><html></html>",
+    ] {
+        let whole = is_xhtml_document(html);
+        for end in (0..=html.len()).filter(|&end| html.is_char_boundary(end)) {
+            if let Some(early) = is_xhtml_document_prefix(&html[..end]) {
+                assert_eq!(early, whole, "{html:?} decided at byte {end}");
+            }
+        }
+    }
+}
+
+#[test]
+fn xhtml_prefix_sniff_decides_once_the_root_tag_is_read() {
+    assert_eq!(
+        is_xhtml_document_prefix("<!DOCTYPE html><html lang=\"en\"><head>"),
+        Some(false)
+    );
+    assert_eq!(is_xhtml_document_prefix("<!doctype html>\n<html>"), Some(false));
 }

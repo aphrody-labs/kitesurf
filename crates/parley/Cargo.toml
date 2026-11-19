@@ -106,6 +106,10 @@ default-features = false
 [dependencies.smallvec]
 version = "1.16.2"
 
+[dependencies.thin-vec]
+version = "0.2"
+default-features = false
+
 [lints.clippy]
 allow_attributes_without_reason = "warn"
 cargo_common_metadata = "warn"

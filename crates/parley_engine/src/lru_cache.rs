@@ -45,6 +45,18 @@ impl<ID, T> LruCache<ID, T> {
         &entry.data
     }
 
+    /// Like [`Self::entry`], but returns a mutable reference.
+    pub(crate) fn entry_mut<K>(&mut self, id: K, make_data: impl FnOnce() -> T) -> &mut T
+    where
+        K: Equivalent<ID> + Into<ID>,
+    {
+        let index = self.find_entry(id, make_data);
+        self.epoch += 1;
+        let entry = &mut self.entries[index];
+        entry.epoch = self.epoch;
+        &mut entry.data
+    }
+
     fn find_entry<K>(&mut self, id: K, make_data: impl FnOnce() -> T) -> usize
     where
         K: Equivalent<ID> + Into<ID>,

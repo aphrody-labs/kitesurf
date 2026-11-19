@@ -89,6 +89,9 @@ function parseUrlLikeSpecifier(specifier: string, baseUrl: string): URL | null {
   // whitespace around a scheme, so no stricter shape test is safe), and a throwing `new URL`
   // costs ~2 us on the resolution hot path.
   if (!baseRelative && !specifier.includes(":")) return null;
+  // A data: URL has an opaque path, so it is never a base. Parsing a multi-megabyte one only to
+  // throw costs milliseconds per relative import site.
+  if (baseRelative && baseUrl.startsWith("data:")) return null;
   try {
     return baseRelative ? new URL(specifier, baseUrl) : new URL(specifier);
   } catch {
@@ -453,21 +456,30 @@ function dynamicImportArguments(body: string, imp: LexedImport): string {
   return body.slice(imp.d + 1, imp.se - 1);
 }
 
-function dynamicImportExpression(body: string, imp: LexedImport): string {
-  if (imp.a < 0) return body.slice(imp.d + 1, imp.se - 1);
-  const withSeparator = body.slice(imp.d + 1, imp.a);
-  return withSeparator.slice(0, withSeparator.lastIndexOf(","));
-}
-
 // One dynamic import as a runtime-loader call. Without options only the specifier is passed,
 // as before; with options the whole argument list is forwarded, so nothing is evaluated twice
-// and the requested module type reaches the loader. `spec` is the extracted literal, when any.
-function runtimeImportCall(body: string, imp: LexedImport, ref: string, spec?: string): string {
+// and the requested module type reaches the loader. `spec` is the extracted literal.
+function runtimeImportCall(body: string, imp: LexedImport, ref: string, spec: string): string {
   if (imp.a >= 0) {
     return `((s, o) => __ks_import(s, ${ref}, o))(${dynamicImportArguments(body, imp)})`;
   }
-  const first = spec === undefined ? dynamicImportExpression(body, imp) : JSON.stringify(spec);
-  return `__ks_import(${first}, ${ref})`;
+  return `__ks_import(${JSON.stringify(spec)}, ${ref})`;
+}
+
+// `base`, or `base_` and a fixed-width number, absent from `body`. Every rewrite site repeats the
+// name, so its length must not come from the page. Each `base` in `body` rules out at most one
+// candidate of that width, so the scan over `occurrences + 1` candidates always finds one.
+export function unusedIdentifier(body: string, base: string): string {
+  if (!body.includes(base)) return base;
+  const width = String(body.length).length;
+  const taken = new Set<string>();
+  for (let at = body.indexOf(base); at !== -1; at = body.indexOf(base, at + 1)) {
+    taken.add(body.slice(at + base.length, at + base.length + 1 + width));
+  }
+  for (let n = 0; ; n++) {
+    const suffix = "_" + String(n).padStart(width, "0");
+    if (!taken.has(suffix)) return base + suffix;
+  }
 }
 
 function nativelyResolvesTo(specifier: string, importer: string, target: string): boolean {
@@ -494,44 +506,18 @@ function importMetaResolveEnd(
   return match ? imp.se + match[0].length : null;
 }
 
-export function rewriteImportMetaResolve(
-  expression: string,
-  importer: string,
-  syntheticImportMeta?: string,
-): string {
-  const replacement = `((specifier) => globalThis.__ks_resolve_import_map(specifier, ${JSON.stringify(importer)}))`;
-  let imports: ReturnType<typeof lexerParse>[0];
-  try {
-    imports = lexerParse(expression)[0];
-  } catch {
-    return expression;
-  }
-  const rewrites: Array<{ start: number; end: number; text: string }> = [];
-  for (const imp of imports) {
-    if (imp.t !== 3) continue;
-    if (syntheticImportMeta) {
-      rewrites.push({ start: imp.ss, end: imp.se, text: syntheticImportMeta });
-      continue;
-    }
-    const end = importMetaResolveEnd(expression, imp);
-    if (end !== null) {
-      rewrites.push({ start: imp.ss, end, text: replacement });
-    }
-  }
-  let rewritten = expression;
-  for (const rewrite of rewrites.reverse()) {
-    rewritten = rewritten.slice(0, rewrite.start) + rewrite.text + rewritten.slice(rewrite.end);
-  }
-  return rewritten;
-}
-
 export function assignModuleRegistryNames(urls: Iterable<string>): Map<string, string> {
   const allUrls = [...urls];
   const groups = new Map<string, string[]>();
+  const dataUrls: string[] = [];
   for (const url of allUrls) {
     let identity = url;
     try {
       const parsed = new URL(url);
+      if (parsed.protocol === "data:") {
+        dataUrls.push(url);
+        continue;
+      }
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
       parsed.search = "";
       parsed.hash = "";
@@ -565,6 +551,18 @@ export function assignModuleRegistryNames(urls: Iterable<string>): Map<string, s
       occupied.add(candidate);
       names.set(url, candidate);
     }
+  }
+  // workerd refuses a data: module name, so a data: module script is baked under a synthetic
+  // one. Its import.meta.url stays the data: URL, as for a renamed query variant.
+  let dataIndex = 0;
+  for (const url of dataUrls) {
+    let candidate: string;
+    do {
+      candidate = `https://kitesurf-data.invalid/module-${dataIndex}.js`;
+      dataIndex++;
+    } while (occupied.has(candidate));
+    occupied.add(candidate);
+    names.set(url, candidate);
   }
   return names;
 }
@@ -852,7 +850,14 @@ function maybeWrapInlineModule(body: string, url: string): string {
   return importStmts.join(";\n") + ";\n;(async () => {\n" + remainder + "\n})();\n";
 }
 
+// The stub body never names the url: a "*/" in its query would end the comment.
+const ASSET_IMPORT_STUB = "/* kitesurf: asset-import side-effect stub */\nexport {};\n";
+
+// Asset urls are fetched because dev servers (Vite `?import`, CSS) serve them as JS; a response
+// the module gate rejects, or one the walker cannot use, falls back to the stub.
 function isAssetExtension(url: string): boolean {
+  // A data: URL has no path: the text after the comma is the module source.
+  if (url.startsWith("data:")) return false;
   let path = url;
   const q = path.indexOf("?");
   if (q >= 0) path = path.slice(0, q);
@@ -866,6 +871,18 @@ export type BakedModule = string | { json: unknown };
 const MAX_MODULES = 1000;
 
 const BAKE_BUDGET_BYTES = 40 * 1024 * 1024;
+
+// A data: module's URL is its source, and the bake holds it three times: the module key, the
+// `__ks_module_url()` literal and the resolver's registry alias. Each JSON copy is at most
+// `2 * length + 2`, because JSON escapes `"` and `\`.
+const dataUrlBakeBytes = (url: string): number =>
+  url.startsWith("data:") ? url.length + 2 * (2 * url.length + 2) : 0;
+
+const DIAGNOSTIC_URL_CHARS = 256;
+
+// A data: URL can be megabytes long, and a diagnostic is baked into the page's module map.
+const diagnosticUrl = (url: string): string =>
+  url.length <= DIAGNOSTIC_URL_CHARS ? url : `${url.slice(0, DIAGNOSTIC_URL_CHARS)}…`;
 
 const MAX_DYNAMIC_MODULE_BYTES = 4 * 1024 * 1024;
 
@@ -1176,8 +1193,11 @@ export async function walkModuleGraph({
         modules.delete(fromUrl);
         return;
       }
-      if (resolved.startsWith("data:")) continue;
-      if (!isPageModuleUrl(resolved)) {
+      // A static data: import is baked like an http(s) one, under a synthetic registry name; the
+      // native specifier would not resolve against the importer's name. import() loads it natively.
+      const dataModule = resolved.startsWith("data:");
+      if (dataModule && isDynamic) continue;
+      if (!dataModule && !isPageModuleUrl(resolved)) {
         // A dynamic import is rewritten to the runtime loader below, which refuses it.
         if (isDynamic) continue;
         failed.set(
@@ -1189,7 +1209,8 @@ export async function walkModuleGraph({
         return;
       }
       if (modules.has(resolved) || failed.has(resolved)) continue;
-      if (/\.wasm$/i.test(new URL(resolved).pathname)) {
+      // A data: URL has no path; its payload is source, not a file name.
+      if (!dataModule && /\.wasm$/i.test(new URL(resolved).pathname)) {
         failed.set(
           resolved,
           "wasm modules in the ES-module graph are not supported " +
@@ -1321,7 +1342,9 @@ export async function walkModuleGraph({
         url,
         integrity: integrityByUrl.get(url) ?? null,
         nonce: nonceByUrl.get(url) ?? null,
-        runtimeInserted: viaTrustedImporter.has(url),
+        // 'strict-dynamic' does not trust a data: import by its importer; the importer's nonce,
+        // which the import inherits, or a data: source still allows it.
+        runtimeInserted: viaTrustedImporter.has(url) && !url.startsWith("data:"),
         module: true,
       });
       if (pre.reportOnly) console.warn(`[kitesurf-csp] ${pre.reportOnly}`);
@@ -1342,7 +1365,8 @@ export async function walkModuleGraph({
       };
       if (connectionId) headers["x-kitesurf-connection-id"] = connectionId;
       if (mainFrameId) headers["x-kitesurf-frame-id"] = mainFrameId;
-      if (pageOrigin) headers["origin"] = pageOrigin;
+      // Queue URLs are normalized, so the scheme test is exact and does not parse the payload.
+      if (pageOrigin && !fetchUrl.startsWith("data:")) headers["origin"] = pageOrigin;
       const walk = await walkRedirects({
         url: fetchUrl,
         signal: ctrl.signal,
@@ -1435,6 +1459,9 @@ export async function walkModuleGraph({
   };
 
   const fetchModuleBody = async (url: string): Promise<ModuleFetchResult> => {
+    // One attempt for an asset url: a failure only costs it the stub, so retrying would hold a
+    // fetch slot for up to three timeouts on a dead file.
+    if (isAssetExtension(url)) return attemptFetchModuleBody(url);
     let last: ModuleFetchResult = {
       ok: false,
       error: `module fetch not attempted for ${url}`,
@@ -1465,17 +1492,25 @@ export async function walkModuleGraph({
         return false;
       }
       modules.set(url, fetched.body);
-      bakedBytes += fetched.body.length;
+      bakedBytes += fetched.body.length + dataUrlBakeBytes(url);
       lexed.add(url);
       return true;
     }
     modules.set(url, fetched.body);
-    bakedBytes += fetched.body.length;
+    bakedBytes += fetched.body.length + dataUrlBakeBytes(url);
     if (!lexed.has(url)) {
       lexed.add(url);
       crawlImports(url, fetched.body);
     }
     return true;
+  };
+
+  const recordFetchFailure = (url: string, error: string, preload?: true): void => {
+    if (isAssetExtension(url)) {
+      modules.set(url, ASSET_IMPORT_STUB);
+    } else if (!preload) {
+      failed.set(url, error);
+    }
   };
 
   const walkStartedAt = Date.now();
@@ -1496,6 +1531,9 @@ export async function walkModuleGraph({
     waiters = [];
     for (const f of w) f();
   };
+
+  const overBudget = (item: WalkQueueItem): boolean =>
+    (item.isDynamic || item.url.startsWith("data:")) && bakedBytes >= BAKE_BUDGET_BYTES;
 
   const itemClass = (item: WalkQueueItem): number =>
     !item.isDynamic ? 0 : item.importerDynFanout > FANOUT_REGISTRY_THRESHOLD ? 2 : 1;
@@ -1522,14 +1560,11 @@ export async function walkModuleGraph({
         }
         continue;
       }
-      if (item.isDynamic && bakedBytes >= BAKE_BUDGET_BYTES) continue;
+      // A data: module's source can import a larger data: URL, so a static chain of them is held
+      // to the budget like a dynamic import.
+      if (overBudget(item)) continue;
       if (item.viaRegistry && pastDeadline()) {
         deadlineSkipped++;
-        continue;
-      }
-      if (isAssetExtension(url)) {
-        // Not the url: a "*/" in its query would end the comment.
-        modules.set(url, "/* kitesurf: asset-import side-effect stub */\nexport {};\n");
         continue;
       }
       keep.push(item);
@@ -1575,11 +1610,11 @@ export async function walkModuleGraph({
       }
       totalFetches++;
       if (!result.ok) {
-        if (!item.preload) failed.set(item.url, result.error);
+        recordFetchFailure(item.url, result.error, item.preload);
       } else if (item.sizeCapped && result.body.length > MAX_DYNAMIC_MODULE_BYTES) {
         oversizedDynamicSkipped++;
         sizeSkipped.add(item.url);
-      } else if (!(item.isDynamic && bakedBytes >= BAKE_BUDGET_BYTES)) {
+      } else if (!overBudget(item)) {
         storeFetched(item.url, result);
       }
     }
@@ -1644,7 +1679,8 @@ export async function walkModuleGraph({
             if (
               modules.has(item.url) ||
               failed.has(item.url) ||
-              (item.isDynamic && (bakedBytes >= BAKE_BUDGET_BYTES || pastDeadline()))
+              overBudget(item) ||
+              (item.isDynamic && pastDeadline())
             ) {
               continue;
             }
@@ -1660,10 +1696,10 @@ export async function walkModuleGraph({
           );
           for (const { item, r } of drained) {
             if (!r.ok) {
-              failed.set(item.url, r.error);
+              recordFetchFailure(item.url, r.error);
               continue;
             }
-            if (!storeFetched(item.url, r)) continue;
+            if (overBudget(item) || !storeFetched(item.url, r)) continue;
             if (r.moduleType === "javascript") scanForIds(r.body);
           }
         }
@@ -1780,6 +1816,16 @@ export async function walkModuleGraph({
     }
   }
 
+  // An asset url whose body the walker could not use (unlexable or unresolvable JS, unparsable
+  // JSON) keeps the side-effect stub, as a rejected fetch does. Its cached lex of the failed body
+  // would otherwise be spliced into the stub by the rewrite pass.
+  for (const url of [...failed.keys()]) {
+    if (!isAssetExtension(url) || modules.has(url)) continue;
+    failed.delete(url);
+    lexCache.delete(url);
+    modules.set(url, ASSET_IMPORT_STUB);
+  }
+
   // A missing static dependency makes every importing module fail, even if a registry alias
   // could otherwise satisfy its native import under a different URL.
   const staticImporters = new Map<string, Set<string>>();
@@ -1788,7 +1834,7 @@ export async function walkModuleGraph({
     for (const imp of lexCache.get(fromUrl) ?? []) {
       if (imp.t !== 1 || !imp.n) continue;
       const resolved = resolveModule(imp.n, responseUrlByRequest.get(fromUrl) ?? fromUrl);
-      if (!resolved || !isPageModuleUrl(resolved)) continue;
+      if (!resolved || (!isPageModuleUrl(resolved) && !resolved.startsWith("data:"))) continue;
       const importers = staticImporters.get(resolved) ?? new Set<string>();
       importers.add(fromUrl);
       staticImporters.set(resolved, importers);
@@ -1802,7 +1848,10 @@ export async function walkModuleGraph({
     const dependency = missingStatic.get(fromUrl);
     if (!dependency) continue;
     modules.delete(fromUrl);
-    failed.set(fromUrl, `Failed to load static module ${dependency} imported from ${fromUrl}`);
+    failed.set(
+      fromUrl,
+      `Failed to load static module ${diagnosticUrl(dependency)} imported from ${diagnosticUrl(fromUrl)}`,
+    );
     for (const importer of staticImporters.get(fromUrl) ?? []) {
       if (missingStatic.has(importer)) continue;
       missingStatic.set(importer, fromUrl);
@@ -1876,48 +1925,26 @@ export async function walkModuleGraph({
     }
     const responseUrl = responseUrlByRequest.get(fromUrl) ?? fromUrl;
     const ref = JSON.stringify(responseUrl);
+    // Each rewritten site names the module's URL, and a data: URL is the whole module source. The
+    // sites call one appended, hoisted function, so the bake holds the URL once, not once per site.
+    const refFunction = unusedIdentifier(body, "__ks_module_url");
+    const siteRef = `${refFunction}()`;
     let syntheticImportMeta: string | undefined;
     if (registryName(fromUrl) !== responseUrl) {
-      syntheticImportMeta = "__ks_import_meta";
-      while (body.includes(syntheticImportMeta)) syntheticImportMeta += "_";
+      syntheticImportMeta = unusedIdentifier(body, "__ks_import_meta");
     }
     const rewrites: { ss: number; se: number; text: string }[] = [];
-    const dynamicRanges = imports
-      .filter((imp) => imp.t === 2)
-      .map((imp) => ({ start: imp.ss, end: imp.se }))
-      .sort((a, b) => a.start - b.start);
-    for (let i = 1; i < dynamicRanges.length; i++) {
-      const previous = dynamicRanges[i - 1];
-      const current = dynamicRanges[i];
-      if (previous && current) current.end = Math.max(current.end, previous.end);
-    }
-    const isInDynamicImport = (start: number, end: number): boolean => {
-      let lo = 0;
-      let hi = dynamicRanges.length;
-      while (lo < hi) {
-        const mid = (lo + hi) >>> 1;
-        const range = dynamicRanges[mid];
-        if (range && range.start <= start) lo = mid + 1;
-        else hi = mid;
-      }
-      const range = dynamicRanges[lo - 1];
-      return range !== undefined && range.end >= end;
+    // A call that goes to the runtime loader has only its keyword replaced, so a site in its
+    // arguments (an import.meta, or another import()) keeps its own rewrite.
+    let importHere: string | null = null;
+    const toRuntimeLoader = (imp: LexedImport): void => {
+      importHere ??= unusedIdentifier(body, "__ks_import_here");
+      rewrites.push({ ss: imp.ss, se: imp.d, text: importHere });
     };
     for (const imp of imports) {
       if (imp.t === 2) {
         const spec = imp.n ?? constSpecifier(body.slice(imp.s, imp.e));
-        if (!spec && imp.d > -1) {
-          const args = rewriteImportMetaResolve(
-            dynamicImportArguments(body, imp),
-            responseUrl,
-            syntheticImportMeta,
-          );
-          const call =
-            imp.a < 0
-              ? `__ks_import(${args}, ${ref})`
-              : `((s, o) => __ks_import(s, ${ref}, o))(${args})`;
-          rewrites.push({ ss: imp.ss, se: imp.se, text: call });
-        }
+        if (!spec && imp.d > -1) toRuntimeLoader(imp);
         if (!spec) continue;
 
         const resolved = resolveModule(spec, responseUrl);
@@ -1930,19 +1957,12 @@ export async function walkModuleGraph({
         }
         if (registryResolved !== null) continue;
 
-        rewrites.push({
-          ss: imp.ss,
-          se: imp.se,
-          text: runtimeImportCall(body, imp, ref),
-        });
+        toRuntimeLoader(imp);
         deferredCount++;
         continue;
       }
 
       if (imp.t === 3) {
-        if (isInDynamicImport(imp.ss, imp.se)) {
-          continue;
-        }
         if (syntheticImportMeta) {
           rewrites.push({ ss: imp.ss, se: imp.se, text: syntheticImportMeta });
           continue;
@@ -1952,7 +1972,7 @@ export async function walkModuleGraph({
         rewrites.push({
           ss: imp.ss,
           se: resolveEnd,
-          text: `((specifier) => globalThis.__ks_resolve_import_map(specifier, ${ref}))`,
+          text: `((specifier) => globalThis.__ks_resolve_import_map(specifier, ${siteRef}))`,
         });
         continue;
       }
@@ -1966,15 +1986,30 @@ export async function walkModuleGraph({
       }
     }
     if (rewrites.length > 0 || syntheticImportMeta) {
-      let b = body;
-      for (const rw of rewrites.sort((a, c) => c.ss - a.ss)) {
-        b = b.slice(0, rw.ss) + rw.text + b.slice(rw.se);
+      // Joined once: splicing the body per site copies the rest of it each time. No two
+      // rewrites overlap: a runtime-loader call gives up only its keyword.
+      const parts: string[] = [];
+      let cursor = 0;
+      let usesSiteRef = importHere !== null;
+      for (const rw of rewrites.sort((a, c) => a.ss - c.ss)) {
+        parts.push(body.slice(cursor, rw.ss), rw.text);
+        cursor = rw.se;
+        if (rw.text.includes(siteRef)) usesSiteRef = true;
       }
+      parts.push(body.slice(cursor));
+      let b = parts.join("");
+      if (importHere !== null) {
+        b += `\nfunction ${importHere}(s, o) { return __ks_import(s, ${siteRef}, o); }`;
+      }
+      const refDeclaration = `function ${refFunction}() { return ${ref}; }`;
       if (syntheticImportMeta) {
+        // On the prelude's one line, so the module's own line numbers do not move.
         b =
-          `const ${syntheticImportMeta}=Object.assign(Object.create(null),` +
-          `{url:${ref},resolve:(specifier)=>globalThis.__ks_resolve_import_map(specifier,${ref})});\n` +
+          `${refDeclaration}const ${syntheticImportMeta}=Object.assign(Object.create(null),` +
+          `{url:${siteRef},resolve:(specifier)=>globalThis.__ks_resolve_import_map(specifier,${siteRef})});\n` +
           b;
+      } else if (usesSiteRef) {
+        b += `\n${refDeclaration}\n`;
       }
       modules.set(fromUrl, b);
     }

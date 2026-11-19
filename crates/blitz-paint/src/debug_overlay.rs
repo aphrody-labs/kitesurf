@@ -42,7 +42,7 @@ pub(crate) fn render_debug_overlay(
         padding,
         margin,
         ..
-    } = *node.final_layout();
+    } = node.final_layout();
     let taffy::Size { width, height } = size;
 
     let padding_border = padding + border;

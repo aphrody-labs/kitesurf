@@ -58,12 +58,41 @@ pub(crate) static FONT_DB: LazyLock<std::sync::RwLock<Arc<fontdb::Database>>> =
 /// heavy page), and
 /// box construction re-parses each from scratch.
 ///
+/// Entries hold the tree weakly, so the cache shares trees that are in use and
+/// never keeps one alive by itself, such as a removed chart's frames. A dead
+/// entry's key (the source) stays until the next insert prunes it.
+///
 /// Bounded because a mutating `<svg>` re-serializes on every write,
-/// so an animated one would otherwise add an entry per frame forever.
+/// so an animated one would otherwise add a key per frame forever.
 #[cfg(feature = "svg")]
-static SVG_TREE_CACHE: LazyLock<
-    std::sync::RwLock<std::collections::HashMap<Box<str>, crate::node::SvgImageData>>,
-> = LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+static SVG_TREE_CACHE: LazyLock<std::sync::RwLock<std::collections::HashMap<Box<str>, WeakSvg>>> =
+    LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+
+#[cfg(feature = "svg")]
+struct WeakSvg {
+    tree: std::sync::Weak<usvg::Tree>,
+    intrinsic_dimensions: crate::node::SvgIntrinsicDimensions,
+    snapshot_prefix: Option<u32>,
+}
+
+#[cfg(feature = "svg")]
+impl WeakSvg {
+    fn new(data: &crate::node::SvgImageData) -> Self {
+        Self {
+            tree: Arc::downgrade(&data.tree),
+            intrinsic_dimensions: data.intrinsic_dimensions,
+            snapshot_prefix: data.snapshot_prefix,
+        }
+    }
+
+    fn upgrade(&self) -> Option<crate::node::SvgImageData> {
+        Some(crate::node::SvgImageData {
+            tree: self.tree.upgrade()?,
+            intrinsic_dimensions: self.intrinsic_dimensions,
+            snapshot_prefix: self.snapshot_prefix,
+        })
+    }
+}
 
 #[cfg(feature = "svg")]
 const SVG_TREE_CACHE_CAP: usize = 512;
@@ -201,7 +230,7 @@ pub fn walk_tree(indent: usize, node: &Node) {
     }
 
     print!("{}", " ".repeat(indent));
-    let id = node.id;
+    let id = node.id();
     match &node.data {
         NodeData::Document(_) => println!("#Document {id}"),
 
@@ -235,7 +264,7 @@ pub fn walk_tree(indent: usize, node: &Node) {
             for attr in data.attrs.iter() {
                 print!(" {}=\"{}\"", attr.name.local, attr.value);
             }
-            if !node.children.is_empty() {
+            if !node.children().is_empty() {
                 println!(">");
             } else {
                 println!("/>");
@@ -248,9 +277,9 @@ pub fn walk_tree(indent: usize, node: &Node) {
           // NodeData::ProcessingInstruction { .. } => unreachable!(),
     }
 
-    if !node.children.is_empty() {
-        for child_id in node.children.iter() {
-            walk_tree(indent + 2, node.with(*child_id));
+    if !node.children().is_empty() {
+        for child_id in node.children().iter() {
+            walk_tree(indent + 2, node.with(child_id));
         }
 
         if let NodeData::Element(data) = &node.data {
@@ -405,8 +434,8 @@ pub fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg:
     let cache_key: Option<&str> = std::str::from_utf8(source).ok();
     if let Some(key) = cache_key {
         if let Ok(cache) = SVG_TREE_CACHE.read() {
-            if let Some(hit) = cache.get(key) {
-                return Ok(hit.clone());
+            if let Some(hit) = cache.get(key).and_then(WeakSvg::upgrade) {
+                return Ok(hit);
             }
         }
     }
@@ -419,10 +448,13 @@ pub fn parse_svg_image(source: &[u8]) -> Result<crate::node::SvgImageData, usvg:
     if let Some(key) = cache_key {
         if let Ok(mut cache) = SVG_TREE_CACHE.write() {
             if generation == SVG_TREE_CACHE_GEN.load(std::sync::atomic::Ordering::SeqCst) {
+                // A key is the whole source, so drop dead entries on every
+                // insert to release it.
+                cache.retain(|_, entry| entry.tree.strong_count() > 0);
                 if cache.len() >= SVG_TREE_CACHE_CAP {
                     cache.clear();
                 }
-                cache.insert(key.into(), parsed.clone());
+                cache.insert(key.into(), WeakSvg::new(&parsed));
             }
         }
     }
