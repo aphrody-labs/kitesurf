@@ -72,6 +72,7 @@ jobs:
         with:
           bazel-cache: "true"
           bazelflare: "true"
+          pnpm-cache: "false"
       # The buckets run on bazelflare's WPT executors, whose image holds the pinned corpus. A fork's
       # pull request has no bazelflare, so main runs the gate once it merges.
       - if: steps.setup.outputs.bazelflare == 'true'

@@ -9,6 +9,12 @@ inputs:
     description: Restore Bazel's disk and repository caches; the job saves them itself.
     required: false
     default: "false"
+  pnpm-cache:
+    description: >-
+      Restore and save pnpm's store with setup-node. Set "false" in a job that runs no pnpm install:
+      on a cache miss, setup-node's post step fails on the store directory that nothing created.
+    required: false
+    default: "true"
   bazelflare:
     description: >-
       With bazel-cache, build on bazelflare (.bazelrc's bazelflare config) when the job has an OIDC
@@ -76,7 +82,7 @@ runs:
     - uses: actions/setup-node@v4
       with:
         node-version: 22
-        cache: pnpm
+        cache: ${{ inputs.pnpm-cache == 'true' && 'pnpm' || '' }}
     - if: inputs.rust == 'true'
       shell: bash
       run: rustup show
