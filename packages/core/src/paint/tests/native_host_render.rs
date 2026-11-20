@@ -34,6 +34,19 @@ fn renders_page_pixels_to_png() {
 }
 
 #[test]
+fn renders_text_with_the_embedded_fonts() {
+    let html = r#"<!doctype html><html><body style="margin:0;background:white;color:black;font:24px sans-serif">Hello kitesurf</body></html>"#;
+    let png =
+        render_html_to_image(html, "https://test.example/", 200, 40, "png", 90).expect("render");
+    let (_, _, px) = decode(&png);
+    let ink = px.chunks_exact(4).filter(|p| p[0] < 128).count();
+    assert!(
+        ink > 100,
+        "text should leave dark pixels on white; found {ink}"
+    );
+}
+
+#[test]
 fn rejects_an_empty_viewport() {
     assert!(render_html_to_image("<p>x</p>", "", 0, 10, "png", 90).is_err());
 }

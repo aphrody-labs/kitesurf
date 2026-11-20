@@ -1084,11 +1084,11 @@ pub fn get_or_init_font_context() -> FontContext {
     SHARED_FONT_CONTEXT.with(|cell| {
         let mut borrow = cell.borrow_mut();
         if borrow.is_none() {
-            #[cfg(test)]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             {
                 *borrow = Some(make_font_context());
             }
-            #[cfg(not(test))]
+            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
             {
                 *borrow = Some(make_empty_font_context());
             }
@@ -1133,20 +1133,22 @@ pub fn font_families_json() -> String {
     serde_json::json!(families).to_string()
 }
 
-#[cfg(test)]
+// Native builds have no JS to register fonts, so they embed the Noto set; wasm gets its faces
+// through `register_ua_fonts` and friends.
+#[cfg(any(test, not(target_arch = "wasm32")))]
 const NOTO_SANS_TEST_BYTES: &[u8] = include_bytes!("../../../engine/public/fonts/NotoSans.ttf");
-#[cfg(test)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 const NOTO_SANS_ITALIC_TEST_BYTES: &[u8] =
     include_bytes!("../../../engine/public/fonts/NotoSans-Italic.ttf");
-#[cfg(test)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 const NOTO_SERIF_TEST_BYTES: &[u8] = include_bytes!("../../../engine/public/fonts/NotoSerif.ttf");
-#[cfg(test)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 const NOTO_SANS_MONO_TEST_BYTES: &[u8] =
     include_bytes!("../../../engine/public/fonts/NotoSansMono.ttf");
-#[cfg(test)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 const NOTO_SANS_SYMBOLS_TEST_BYTES: &[u8] =
     include_bytes!("../../../engine/public/fonts/NotoSansSymbols.ttf");
-#[cfg(test)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 const NOTO_SANS_SYMBOLS2_TEST_BYTES: &[u8] =
     include_bytes!("../../../engine/public/fonts/NotoSansSymbols2.ttf");
 
@@ -1573,7 +1575,7 @@ pub fn register_ua_fonts(
     true
 }
 
-#[cfg(test)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub fn make_font_context() -> FontContext {
     let mut font_ctx = make_empty_font_context();
     populate_ua_fonts(
