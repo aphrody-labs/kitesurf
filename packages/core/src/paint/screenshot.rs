@@ -138,6 +138,30 @@ pub fn ks_render_html_to_image(
     try_render(html, base_url, width, height, fmt, q).unwrap_or_default()
 }
 
+/// Native entry point for hosts that link the crate as an rlib: the same render as
+/// [`ks_render_html_to_image`], with the failure reason instead of empty bytes.
+#[cfg(feature = "blitz")]
+pub fn render_html_to_image(
+    html: &str,
+    base_url: &str,
+    width: u32,
+    height: u32,
+    format: &str,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
+    if width == 0 || height == 0 {
+        return Err(format!("empty viewport {width}x{height}"));
+    }
+    try_render(
+        html,
+        base_url,
+        width,
+        height,
+        ImageFormat::from_str(format),
+        quality.clamp(1, 100),
+    )
+}
+
 #[cfg(feature = "blitz")]
 fn try_render(
     html: &str,

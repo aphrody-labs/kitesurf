@@ -40,6 +40,8 @@ static ALLOCATOR: swap_alloc::SwapAlloc = swap_alloc::SwapAlloc;
 mod ks_tracing;
 mod layout;
 mod paint;
+#[cfg(feature = "blitz")]
+pub use paint::screenshot::render_html_to_image;
 mod resources;
 mod style;
 #[cfg(test)]
