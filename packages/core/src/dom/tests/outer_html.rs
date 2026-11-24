@@ -348,3 +348,188 @@ fn serializes_siblings_void_raw_text_and_comments_in_document_order() {
          <body><p class=\"x\">a &amp; b</p><!--note--><br><span>c</span></body></html>"
     );
 }
+
+#[test]
+fn escapes_markup_characters_and_no_break_space_in_attribute_values() {
+    let dom = DomHandle::new(
+        "<html><head></head><body>\
+         <p title=\"a&lt;b&gt;c&amp;d&quot;e&nbsp;f\u{a9}\">x</p></body></html>",
+        "https://example.test/",
+    );
+
+    assert_eq!(
+        dom.outer_html(0),
+        "<html><head></head><body>\
+         <p title=\"a&lt;b&gt;c&amp;d&quot;e&nbsp;f\u{a9}\">x</p></body></html>"
+    );
+}
+
+#[test]
+fn keeps_the_prefix_of_a_namespaced_attribute() {
+    let dom = DomHandle::new(
+        "<html><head></head><body><svg xmlns:xlink=\"http://www.w3.org/1999/xlink\">\
+         <use xlink:href=\"#a\" xml:lang=\"en\"></use></svg></body></html>",
+        "https://example.test/",
+    );
+
+    assert_eq!(
+        dom.outer_html(0),
+        "<html><head></head><body><svg xmlns:xlink=\"http://www.w3.org/1999/xlink\">\
+         <use xlink:href=\"#a\" xml:lang=\"en\"></use></svg></body></html>"
+    );
+}
+
+#[test]
+fn writes_a_bare_xmlns_on_svg_and_math_without_a_prefix() {
+    let html = "<html><head></head><body>\
+                <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\">\
+                <circle r=\"4\"></circle></svg>\
+                <math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mi>x</mi></math>\
+                </body></html>";
+    let dom = DomHandle::new(html, "https://example.test/");
+
+    assert_eq!(dom.outer_html(0), html);
+}
+
+#[test]
+fn writes_the_checked_attribute_and_leaves_checkedness_to_the_snapshot() {
+    let dom = DomHandle::new(
+        "<html><head></head><body>\
+         <input type=\"checkbox\" id=\"a\"><input type=\"checkbox\" id=\"b\" checked=\"checked\">\
+         </body></html>",
+        "https://example.test/",
+    );
+    let handle = |id: &str| u32::try_from(dom.get_element_by_id(id)).expect("element");
+    // What a script or a click does: the first becomes checked and the second unchecked,
+    // and neither touches an attribute.
+    assert!(dom.set_checkbox_checked(handle("a"), true));
+    assert!(dom.set_checkbox_checked(handle("b"), false));
+
+    assert_eq!(
+        dom.outer_html(0),
+        "<html><head></head><body>\
+         <input type=\"checkbox\" id=\"a\"><input type=\"checkbox\" id=\"b\" checked=\"checked\">\
+         </body></html>"
+    );
+    assert_eq!(
+        dom.snapshot_html(0),
+        "<html><head></head><body>\
+         <input checked=\"\" type=\"checkbox\" id=\"a\"><input type=\"checkbox\" id=\"b\">\
+         </body></html>"
+    );
+    assert_eq!(
+        dom.inner_html(handle("a")),
+        "",
+        "an input has no content either way"
+    );
+}
+
+// What the DOM shim does the first time a script reads template.content: the children move to
+// a detached node, and the core is told which.
+fn move_template_content(dom: &DomHandle, template: u32) -> u32 {
+    let contents = dom.create_element("#document-fragment");
+    for child in dom.child_ids(template) {
+        assert!(dom.remove_node(child));
+        assert!(dom.append_child_node(contents, child));
+    }
+    assert!(dom.set_template_contents(template, contents));
+    contents
+}
+
+fn element(dom: &DomHandle, id: &str) -> u32 {
+    u32::try_from(dom.get_element_by_id(id)).expect("element")
+}
+
+#[test]
+fn writes_a_templates_content_from_the_node_it_was_moved_to() {
+    let dom = DomHandle::new(
+        "<html><head></head><body>\
+         <template id=\"t\"><b>in</b><template><i>deep</i></template></template>\
+         </body></html>",
+        "https://example.test/",
+    );
+    let template = element(&dom, "t");
+    move_template_content(&dom, template);
+
+    assert_eq!(
+        dom.outer_html(template),
+        "<template id=\"t\"><b>in</b><template><i>deep</i></template></template>"
+    );
+    assert_eq!(
+        dom.inner_html(template),
+        "<b>in</b><template><i>deep</i></template>"
+    );
+    let whole = "<html><head></head><body>\
+                 <template id=\"t\"><b>in</b><template><i>deep</i></template></template>\
+                 </body></html>";
+    assert_eq!(dom.outer_html(0), whole);
+    let stream = dom.outer_html_stream(0, "", "").expect("stream");
+    let (streamed, _) = drain_stream(&dom, stream, 7, |_| {});
+    assert_eq!(String::from_utf8(streamed).unwrap(), whole);
+
+    // A node appended to the template element itself is not its content, and a browser
+    // leaves it out of the serialization.
+    let stray = dom.create_element("u");
+    assert!(dom.append_child_node(template, stray));
+    assert_eq!(
+        dom.outer_html(template),
+        "<template id=\"t\"><b>in</b><template><i>deep</i></template></template>"
+    );
+}
+
+#[test]
+fn a_template_inside_its_own_content_still_serializes() {
+    let dom = DomHandle::new(
+        "<html><head></head><body>\
+         <template id=\"t\"><b>in</b></template><template id=\"a\"></template>\
+         <template id=\"b\"></template></body></html>",
+        "https://example.test/",
+    );
+    // The shim refuses both inserts, as Chrome does; if the core gets these trees anyway, the
+    // serializer must still end.
+    let t = element(&dom, "t");
+    let contents = move_template_content(&dom, t);
+    assert!(dom.remove_node(t) && dom.append_child_node(contents, t));
+    let (a, b) = (element(&dom, "a"), element(&dom, "b"));
+    let (a_contents, b_contents) = (
+        move_template_content(&dom, a),
+        move_template_content(&dom, b),
+    );
+    assert!(dom.remove_node(b) && dom.append_child_node(a_contents, b));
+    assert!(dom.remove_node(a) && dom.append_child_node(b_contents, a));
+
+    assert_eq!(
+        dom.outer_html(t),
+        "<template id=\"t\"><b>in</b><template id=\"t\"></template></template>"
+    );
+    assert_eq!(dom.inner_html(t), "<b>in</b><template id=\"t\"></template>");
+    assert_eq!(
+        dom.outer_html(a),
+        "<template id=\"a\"><template id=\"b\"><template id=\"a\"></template></template></template>"
+    );
+}
+
+#[test]
+fn forgets_a_template_once_it_is_dropped() {
+    let dom = DomHandle::new(
+        "<html><head></head><body><div id=\"one\"><template id=\"a\"></template></div>\
+         <div id=\"two\"><template id=\"b\"></template></div></body></html>",
+        "https://example.test/",
+    );
+    move_template_content(&dom, element(&dom, "a"));
+    move_template_content(&dom, element(&dom, "b"));
+    assert_eq!(dom.template_contents.borrow().len(), 2);
+
+    // innerHTML detaches the old children, which a script may still hold; the shim drops them
+    // later through dropNode, which reports each node.
+    let (one, a) = (element(&dom, "one"), element(&dom, "a"));
+    let ops = format!(r#"[{{"kind":"setInnerHtml","node":{one},"html":"<p>x</p>"}}]"#);
+    assert_eq!(dom.apply_ops(&ops).ok(), Some(1));
+    assert_eq!(dom.template_contents.borrow().len(), 2);
+    assert!(dom.drop_node(a));
+    assert_eq!(dom.template_contents.borrow().len(), 1);
+    // Setting an element's text drops its children without reporting them, so the core has to
+    // notice that the template is gone.
+    assert!(dom.set_node_text(element(&dom, "two"), "y"));
+    assert!(dom.template_contents.borrow().is_empty());
+}
