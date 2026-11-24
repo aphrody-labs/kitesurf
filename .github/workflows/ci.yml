@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+    # labeled/unlabeled re-evaluate the gate when a maintainer adds or removes ci:approved.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -25,6 +27,29 @@ jobs:
       # Authenticates the job to bazelflare (bazel/bazelflare/credential-helper).
       id-token: write
     steps:
+      # The vouch workflow labels PRs, but labels it adds with GITHUB_TOKEN do not trigger a
+      # labeled run, so this gate checks the author directly. A required check counts a
+      # skipped job as passing, so an unapproved PR must fail this job rather than skip it.
+      - id: vouch
+        name: Check author trust
+        if: github.event_name == 'pull_request'
+        uses: mitchellh/vouch/action/check-user@d66fa29a64600490892131ad87597c30c91fcac4 # v1
+        with:
+          user: ${{ github.event.pull_request.user.login }}
+          allow-fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Require vouch or maintainer approval
+        if: >-
+          github.event_name == 'pull_request' &&
+          (steps.vouch.outputs.status == 'denounced' ||
+          contains(github.event.pull_request.labels.*.name, 'vouch:denounced') ||
+          (steps.vouch.outputs.vouched != 'true' &&
+          !contains(github.event.pull_request.labels.*.name, 'ci:approved')))
+        run: |
+          echo "::error::This pull request is from an unvouched or denounced author. A maintainer must add the ci:approved label before CI runs."
+          exit 1
       - uses: actions/checkout@v4
       - id: setup
         uses: ./.github/actions/setup
